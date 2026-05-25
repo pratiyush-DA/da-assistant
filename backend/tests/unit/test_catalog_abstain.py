@@ -39,10 +39,10 @@ def _db_chunk() -> RetrievedChunk:
 def test_catalog_abstain_when_no_parseable_catalog(mock_retrieve, mock_fetch):
     mock_retrieve.return_value = [_db_chunk()]
     mock_fetch.return_value = None
-    context, _, _, _ = streaming.retrieve_and_fit_context(
+    result = streaming.retrieve_and_fit_context(
         str(uuid4()), "List 5 tables in the dataset"
     )
-    assert "cannot list tables" in context.lower()
+    assert "cannot list tables" in result.context.lower()
 
 
 @patch("services.langchain.streaming.fetch_catalog_chunk")
@@ -50,9 +50,9 @@ def test_catalog_abstain_when_no_parseable_catalog(mock_retrieve, mock_fetch):
 def test_catalog_no_abstain_when_metadata_catalog_exists(mock_retrieve, mock_fetch):
     mock_retrieve.return_value = [_db_chunk()]
     mock_fetch.return_value = _catalog_chunk()
-    context, fitted, _, _ = streaming.retrieve_and_fit_context(
+    result = streaming.retrieve_and_fit_context(
         str(uuid4()), "List 5 tables in the dataset"
     )
-    assert "cannot list tables" not in context.lower()
-    assert "Allowed table names" in context
-    assert any(c.chunk_type == "table_catalog" for c in fitted)
+    assert "cannot list tables" not in result.context.lower()
+    assert "Allowed table names" in result.context
+    assert any(c.chunk_type == "table_catalog" for c in result.fitted_chunks)

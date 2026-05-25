@@ -24,3 +24,21 @@ def test_catalog_intent():
 def test_intent_chunk_types_database():
     types = intent_chunk_types("database")
     assert "database" in types
+
+
+def test_table_by_definition_intent():
+    q = (
+        'which table name has the following table definition '
+        '"Organization responsible for issuing the FOIA annual report"'
+    )
+    assert classify_workbook_query(q) == "table_by_definition"
+    types = intent_chunk_types("table_by_definition")
+    assert types == ["table_definition", "table_catalog"]
+
+
+def test_column_intent_with_table_and_column():
+    q = (
+        "On the FOIA Fields sheet, for table SectionI-1, what is the "
+        "ColumnDefinition for the column FullNameofPointofContact?"
+    )
+    assert classify_workbook_query(q) == "column"

@@ -55,6 +55,8 @@ export type ChatMessage = {
     page_number: number | null;
     document_id: string;
     source?: string;
+    chunk_type?: string;
+    display_label?: string;
   }>;
   created_at: string;
 };

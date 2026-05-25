@@ -1,7 +1,7 @@
 from unittest.mock import patch
 from uuid import uuid4
 
-from services.graphrag.client_catalog import sheet_hint_from_query
+from services.graphrag.client_catalog import resolve_sheet_hint, sheet_hint_from_query
 from services.graphrag.query_signals import parse_query_signals
 
 
@@ -20,6 +20,14 @@ def test_parse_query_signals_sheet_hint(mock_index):
     mock_index.return_value = {"Dim": frozenset({"column"})}
     signals = parse_query_signals("columns on Dim sheet", client_id)
     assert signals["sheet_hint"] == "Dim"
+
+
+def test_resolve_sheet_hint_fuzzy_plural():
+    index = {
+        "FOIA Tables": frozenset({"table_definition"}),
+        "FOIA Fields": frozenset({"column"}),
+    }
+    assert resolve_sheet_hint("question on FOIA Table sheet", index) == "FOIA Tables"
 
 
 def test_sheet_hint_none_when_no_match():

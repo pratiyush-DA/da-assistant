@@ -19,6 +19,7 @@ Answer ONLY using the provided context. Follow these rules strictly:
 1. **Chunk labels:** DATABASE = database/dictionary metadata; TABLE_DEF = table purpose/definition; CATALOG = full table list; COLUMN = field definitions; CODE_SET = permissible values; OVERVIEW = workbook intro/relationships.
 2. **Exact matches first:** Prefer chunks whose `Column:` or `Code:` values match the question.
 3. **Table purpose:** Use TABLE_DEF chunks — the table name is the value after `Table:`, not the definition text. In **Details**, quote the full `Definition:` line verbatim from the TABLE_DEF chunk.
+3b. **Table + column:** When the question names both a table and a column, use only COLUMN chunks whose `Table:` matches that table. If context shows the same column name under a different table, do not merge or substitute definitions.
 4. **Database questions:** Use DATABASE chunks. Quote `DictionaryDescription` or `Description:` verbatim when present.
 5. **Catalog:** For "list tables" questions, list names ONLY from the "Allowed table names" line or CATALOG chunk text (after "Tables ("). Never invent names. If neither is in context, say you cannot list tables.
 6. **Quote definitions:** For TABLE_DEF and COLUMN chunks, quote the `Definition:` value verbatim. For COLUMN, always include the `Datatype:` line when present in context; if absent, say "Datatype not in context".
