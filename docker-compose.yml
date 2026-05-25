@@ -1,0 +1,104 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    image: da-assistant-neo-api
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    entrypoint: ["sh", "/docker-entrypoint.sh"]
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    volumes:
+      - ./backend:/app
+      - ./docker/api-entrypoint.sh:/docker-entrypoint.sh:ro
+      - ./infrastructure/neo4j:/app/infrastructure/neo4j:ro
+      - upload_data:/data/uploads
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data/uploads
+      DOCKER_RUN_MIGRATE: ${DOCKER_RUN_MIGRATE:-1}
+      DOCKER_INIT_NEO4J_SCHEMA: ${DOCKER_INIT_NEO4J_SCHEMA:-0}
+      DOCKER_SEED_CLIENTS: ${DOCKER_SEED_CLIENTS:-0}
+    depends_on:
+      - neo4j
+      - redis
+
+  worker:
+    image: da-assistant-neo-api
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A config worker -l info --concurrency=1
+    volumes:
+      - ./backend:/app
+      - ./infrastructure/neo4j:/app/infrastructure/neo4j:ro
+      - upload_data:/data/uploads
+      - hf_cache:/data/hf_cache
+    env_file:
+      - .env
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MEDIA_ROOT: /data/uploads
+      HF_HOME: /data/hf_cache
+      TRANSFORMERS_CACHE: /data/hf_cache
+    depends_on:
+      - neo4j
+      - redis
+
+  frontend:
+    profiles: ["ui"]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: npm run dev
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - api
+
+volumes:
+  neo4j_data:
+  upload_data:
+  hf_cache:
+  frontend_node_modules:
+  frontend_next:
