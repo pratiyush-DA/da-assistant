@@ -5,8 +5,34 @@ import ReactMarkdown from "react-markdown";
 export type Message = {
   role: "user" | "assistant";
   content: string;
-  sources?: Array<{ section_header?: string; page_number?: number | null }>;
+  sources?: Array<{
+    section_header?: string;
+    page_number?: number | null;
+    source?: string;
+    display_label?: string;
+    chunk_type?: string;
+  }>;
 };
+
+function formatSourceLabel(s: NonNullable<Message["sources"]>[number]): string {
+  if (s.display_label?.trim()) return s.display_label.trim();
+  if (s.source?.trim()) return s.source.trim();
+  if (s.section_header?.trim()) return s.section_header.trim();
+  if (s.page_number != null) return `page ${s.page_number}`;
+  return "Source";
+}
+
+function uniqueSourceLabels(sources: NonNullable<Message["sources"]>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of sources) {
+    const label = formatSourceLabel(s);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    out.push(label);
+  }
+  return out;
+}
 
 type Props = {
   messages: Message[];
@@ -37,10 +63,7 @@ export function MessageThread({ messages, loading }: Props) {
           )}
           {msg.sources && msg.sources.length > 0 && (
             <div className="mt-2 border-t border-gray-100 pt-2 text-xs text-gray-500">
-              Sources:{" "}
-              {msg.sources
-                .map((s) => s.section_header || `page ${s.page_number ?? "?"}`)
-                .join("; ")}
+              Sources: {uniqueSourceLabels(msg.sources).join("; ")}
             </div>
           )}
         </div>

@@ -13,7 +13,9 @@ from services.graphrag.metadata_lookup import (
     fetch_catalog_chunk,
     fetch_table_definition,
     lookup_column_chunks,
+    lookup_table_by_definition,
 )
+from services.graphrag.retrieval_scoring import boost_chunks_for_signals
 from services.graphrag.query_expansion import expand_query
 from services.graphrag.query_signals import parse_query_signals
 from services.graphrag.retriever import RetrievedChunk, rerank_chunks
@@ -147,9 +149,17 @@ def _rank_table_def(entity: str | None, hits: list[RetrievedChunk]) -> list[Retr
     return sorted(hits, key=key)
 
 
-def _anchor_is_sufficient_column(anchor: RetrievedChunk) -> bool:
+def _anchor_is_sufficient_column(
+    anchor: RetrievedChunk,
+    *,
+    entity_table: str | None = None,
+) -> bool:
     body = (anchor.child_text or anchor.chunk_text or "").lower()
-    return "definition:" in body and "datatype:" in body
+    if "definition:" not in body:
+        return False
+    if entity_table:
+        return (anchor.table_name or "").lower() == entity_table.lower()
+    return True
 
 
 def catalog_fallback_anchor(client_id: UUID | str) -> RetrievedChunk | None:
@@ -200,10 +210,34 @@ def fetch_anchor_chunks(
                 if fallback:
                     anchors.append(fallback)
 
+    elif intent == "table_by_definition":
+        phrase = signals.get("quoted_definition")
+        if phrase:
+            meta_hits = lookup_table_by_definition(
+                client_id,
+                phrase,
+                sheet_name=sheet_hint,
+                limit=2,
+            )
+            if meta_hits:
+                anchors.append(meta_hits[0])
+        if not anchors and phrase:
+            hits = hybrid_search(
+                client_id,
+                phrase,
+                limit=5,
+                chunk_types=["table_definition"],
+                sheet_hint=sheet_hint,
+            )
+            if hits:
+                anchors.append(hits[0])
+
     elif intent == "table":
         entity = signals.get("entity_table") or signals.get("table_hint")
         if entity:
-            meta_def = fetch_table_definition(client_id, entity)
+            meta_def = fetch_table_definition(
+                client_id, entity, sheet_name=sheet_hint
+            )
             if meta_def:
                 anchors.append(meta_def)
         if not anchors:
@@ -223,11 +257,19 @@ def fetch_anchor_chunks(
 
     elif intent == "column":
         col = signals.get("column_name")
+        entity = signals.get("entity_table") or signals.get("table_hint")
         if col:
-            meta_hits = lookup_column_chunks(client_id, col, limit=5)
+            meta_hits = lookup_column_chunks(
+                client_id,
+                col,
+                limit=5,
+                table_name=entity,
+                sheet_name=sheet_hint,
+            )
             if meta_hits:
                 anchors.append(meta_hits[0])
             else:
+                table_names = [entity] if entity else None
                 hits = hybrid_search(
                     client_id,
                     col,
@@ -235,9 +277,15 @@ def fetch_anchor_chunks(
                     chunk_types=["column"],
                     sheet_hint=sheet_hint,
                     column_names=[col],
+                    table_names=table_names,
                 )
                 scored = [(h, _column_anchor_score(col, h)) for h in hits]
                 scored = [(h, s) for h, s in scored if s >= 0]
+                if entity:
+                    scored = [
+                        (h, s + (200 if (h.table_name or "").lower() == entity.lower() else -300))
+                        for h, s in scored
+                    ]
                 if scored:
                     scored.sort(key=lambda x: x[1], reverse=True)
                     anchors.append(scored[0][0])
@@ -267,6 +315,11 @@ def _intent_exclusive_chunks(
         filtered = [c for c in merged if (c.chunk_type or "") == "column"]
         return pin_anchor_chunks(filtered, anchors, min(limit, 3))
 
+    if intent == "table_by_definition":
+        allowed = {"table_definition"}
+        filtered = [c for c in merged if (c.chunk_type or "") in allowed]
+        return pin_anchor_chunks(filtered, anchors, min(limit, 2))
+
     if intent not in NO_COLUMN_SECONDARY_INTENTS or not anchors:
         return merged
 
@@ -276,7 +329,7 @@ def _intent_exclusive_chunks(
     elif intent == "database":
         allowed = {"database", "overview"}
     filtered = [c for c in merged if (c.chunk_type or "") in allowed]
-    cap = 1 if intent in ("table", "database") else limit
+    cap = 1 if intent in ("table", "database", "table_by_definition") else limit
     return pin_anchor_chunks(filtered, anchors, min(limit, cap))
 
 
@@ -323,31 +376,41 @@ def mixed_document_search(
     client_id: UUID | str,
     query: str,
     limit: int | None = None,
+    *,
+    profile=None,
 ) -> list[RetrievedChunk]:
     """Dual-path retrieval for clients with both workbook and narrative documents."""
     limit = limit or settings.VECTOR_SEARCH_LIMIT
-    domain = classify_query_domain(query)
-    if domain == "narrative":
-        narr_limit = limit
-        wb_limit = 0
-    elif domain == "workbook":
-        narr_limit = 0
-        wb_limit = limit
+    if profile is not None:
+        narr_limit = max(math.ceil(limit * profile.narrative_limit_ratio), 0)
+        wb_limit = max(math.floor(limit * profile.workbook_limit_ratio), 0)
+        if profile.domain == "narrative":
+            narr_limit, wb_limit = limit, 0
+        elif profile.domain == "workbook":
+            narr_limit, wb_limit = 0, limit
     else:
-        q_lower = query.lower()
-        has_wb_tokens = bool(
-            re.search(
-                r"\b(column|table|datatype|database|dictionary|spreadsheet|schema|catalog)\b",
-                q_lower,
-                re.I,
-            )
-        )
-        if not has_wb_tokens:
-            narr_limit = max(math.ceil(limit * 0.75), 1)
-            wb_limit = max(math.floor(limit * 0.25), 0)
+        domain = classify_query_domain(query)
+        if domain == "narrative":
+            narr_limit = limit
+            wb_limit = 0
+        elif domain == "workbook":
+            narr_limit = 0
+            wb_limit = limit
         else:
-            narr_limit = max(math.ceil(limit * 0.55), 1)
-            wb_limit = max(math.floor(limit * 0.45), 1)
+            q_lower = query.lower()
+            has_wb_tokens = bool(
+                re.search(
+                    r"\b(column|table|datatype|database|dictionary|spreadsheet|schema|catalog)\b",
+                    q_lower,
+                    re.I,
+                )
+            )
+            if not has_wb_tokens:
+                narr_limit = max(math.ceil(limit * 0.75), 1)
+                wb_limit = max(math.floor(limit * 0.25), 0)
+            else:
+                narr_limit = max(math.ceil(limit * 0.55), 1)
+                wb_limit = max(math.floor(limit * 0.45), 1)
 
     narrative_hits: list[RetrievedChunk] = []
     workbook_hits: list[RetrievedChunk] = []
@@ -379,11 +442,34 @@ def workbook_multi_hop_search(
 ) -> list[RetrievedChunk]:
     limit = limit or settings.VECTOR_SEARCH_LIMIT
     signals = parse_query_signals(query, client_id)
-    expanded = expand_query(query)
-    intent = classify_workbook_query(query)
+    expanded = expand_query(query, signals=signals)
+    intent = signals.get("workbook_intent") or classify_workbook_query(query)
     anchors = fetch_anchor_chunks(client_id, query, intent, signals, limit)
     col_name = signals.get("column_name")
     col_names_param = [col_name] if col_name else None
+    entity_table = signals.get("entity_table") or signals.get("table_hint")
+
+    if intent == "table_by_definition":
+        if anchors:
+            return pin_anchor_chunks([], anchors, min(limit, 2))
+        primary_lists: list[list] = []
+        phrase = signals.get("quoted_definition") or query
+        for q in expanded[:3]:
+            hits = hybrid_search(
+                client_id,
+                q,
+                limit=4,
+                chunk_types=["table_definition"],
+                sheet_hint=signals.get("sheet_hint"),
+            )
+            if hits:
+                primary_lists.append(_hits_to_dicts(hits))
+        primary_chunks = rrf_merge(primary_lists) if primary_lists else []
+        exclusive = _intent_exclusive_chunks(
+            intent, anchors, primary_chunks, min(limit, 2)
+        )
+        boosted = boost_chunks_for_signals(exclusive, signals)
+        return rerank_chunks(query, boosted)
 
     if intent == "catalog":
         if anchors:
@@ -405,14 +491,17 @@ def workbook_multi_hop_search(
         )
         return rerank_chunks(query, exclusive)
 
-    if intent == "column" and anchors and _anchor_is_sufficient_column(anchors[0]):
+    if intent == "column" and anchors and _anchor_is_sufficient_column(
+        anchors[0], entity_table=entity_table
+    ):
         return pin_anchor_chunks([], anchors, min(limit, 3))
 
     primary_types = intent_chunk_types(intent)
     if intent == "catalog":
         primary_types = ["table_catalog"]
-    entity_table = signals.get("entity_table")
-    table_names_filter = [entity_table] if entity_table and intent == "table" else None
+    table_names_filter = None
+    if entity_table and intent in ("table", "column"):
+        table_names_filter = [entity_table]
 
     primary_lists = []
     search_limit = 3 if intent == "column" else limit
@@ -434,8 +523,10 @@ def workbook_multi_hop_search(
     table_names = _unique_table_names(primary_chunks)
     if entity_table and entity_table not in table_names:
         table_names.append(entity_table)
+    if entity_table and intent == "column":
+        table_names = [entity_table]
 
-    if intent in ("column", "general") and not table_names:
+    if intent in ("column", "general") and not table_names and intent != "column":
         table_lists: list[list] = []
         for q in expanded[:3]:
             hits = hybrid_search(
@@ -456,7 +547,7 @@ def workbook_multi_hop_search(
 
     secondary_chunks: list[RetrievedChunk] = []
     skip_secondary = intent == "column" and anchors and _anchor_is_sufficient_column(
-        anchors[0]
+        anchors[0], entity_table=entity_table
     )
     if intent not in NO_COLUMN_SECONDARY_INTENTS and not skip_secondary:
         secondary_types = ["column", "code_set"]
@@ -517,7 +608,8 @@ def workbook_multi_hop_search(
     exclusive = _intent_exclusive_chunks(
         intent, anchors, capped, cap, column_name=col_name
     )
-    ranked = rerank_chunks(query, exclusive)
+    boosted = boost_chunks_for_signals(exclusive, signals)
+    ranked = rerank_chunks(query, boosted)
     return pin_anchor_chunks(ranked, anchors, cap)
 
 

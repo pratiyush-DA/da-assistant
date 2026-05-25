@@ -4,7 +4,14 @@ import re
 
 from services.graphrag.workbook_rag import classify_query_domain, classify_workbook_query
 
-INTENTS_SKIP_COLUMN_SUFFIXES = frozenset({"table", "database", "catalog", "code"})
+INTENTS_SKIP_COLUMN_SUFFIXES = frozenset({
+    "table",
+    "table_by_definition",
+    "database",
+    "catalog",
+    "code",
+    "column",
+})
 
 
 def _camel_variants(phrase: str) -> list[str]:
@@ -17,7 +24,12 @@ def _camel_variants(phrase: str) -> list[str]:
     return list(dict.fromkeys([phrase, joined, full, compact, " ".join(words)]))
 
 
-def expand_query(query: str, max_queries: int = 6) -> list[str]:
+def expand_query(
+    query: str,
+    max_queries: int = 6,
+    *,
+    signals: dict | None = None,
+) -> list[str]:
     """Return deduplicated search strings (original first)."""
     seen: set[str] = set()
     out: list[str] = []
@@ -33,7 +45,13 @@ def expand_query(query: str, max_queries: int = 6) -> list[str]:
 
     lower = query.lower()
     domain = classify_query_domain(query)
-    wb_intent = classify_workbook_query(query)
+    wb_intent = (
+        (signals or {}).get("workbook_intent")
+        or classify_workbook_query(query)
+    )
+    entity_table = (signals or {}).get("entity_table")
+    column_name = (signals or {}).get("column_name")
+    quoted = (signals or {}).get("quoted_definition")
 
     if domain == "narrative":
         for variant in _camel_variants(query):
@@ -49,35 +67,42 @@ def expand_query(query: str, max_queries: int = 6) -> list[str]:
     elif wb_intent == "database":
         add("database description")
         add("dictionary metadata")
-
-    col_token = None
-    if wb_intent == "column":
+    elif wb_intent == "table_by_definition":
+        if quoted:
+            add(quoted)
+            add(f"Definition: {quoted}")
+    elif wb_intent == "column":
         from services.graphrag.query_signals import extract_column_name
 
-        col_token = extract_column_name(query)
+        col_token = column_name or extract_column_name(query)
         if col_token:
             add(f"{col_token} definition")
             add(f"{col_token} datatype")
             add(f"Column: {col_token}")
-
-    if (
-        wb_intent not in INTENTS_SKIP_COLUMN_SUFFIXES
-        and domain != "narrative"
-        and "column" not in lower
-        and "field" not in lower
-    ):
-        add(f"{query} columns")
-        add(f"{query} definition")
+            if entity_table:
+                add(f"Table: {entity_table} Column: {col_token}")
 
     if wb_intent == "table":
         from services.graphrag.query_signals import extract_entity_table_name
 
-        entity = extract_entity_table_name(query)
+        entity = entity_table or extract_entity_table_name(query)
         if entity:
             add(f"Table: {entity}")
             add(f"{entity} table definition")
 
-    for variant in _camel_variants(query):
-        add(variant)
+    skip_column_suffix = (
+        wb_intent in INTENTS_SKIP_COLUMN_SUFFIXES
+        or domain == "narrative"
+        or "column" in lower
+        or "field" in lower
+        or (entity_table and column_name)
+    )
+    if not skip_column_suffix:
+        add(f"{query} columns")
+        add(f"{query} definition")
+
+    if wb_intent != "table_by_definition":
+        for variant in _camel_variants(query):
+            add(variant)
 
     return out[:max_queries]

@@ -97,6 +97,13 @@ def ingest_document(self, document_id: str):
             children=child_payloads,
         )
 
+        if is_spreadsheet_type(document["file_type"]) and is_workbook_dictionary(
+            elements
+        ):
+            from services.graphrag.client_catalog import clear_sheet_index_cache
+
+            clear_sheet_index_cache(client_id)
+
         doc_repo.set_status(document_id, "ready", error_message="")
         logger.info(
             "Ingested document %s with %s parents and %s children",

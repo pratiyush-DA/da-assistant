@@ -3,6 +3,7 @@ from collections.abc import Iterator
 from django.conf import settings
 from langchain_core.exceptions import LangChainException
 
+from services.graphrag.citations import select_citation_chunks
 from services.graphrag.context_extractors import (
     catalog_names_from_chunks,
     extract_definition_from_table_chunk,
@@ -15,14 +16,14 @@ from services.graphrag.multi_hop import (
     multi_hop_search,
     workbook_multi_hop_search,
 )
+from services.graphrag.query_signals import parse_query_signals
+from services.graphrag.retrieval_profile import RetrievalProfile, resolve_retrieval_profile
 from services.graphrag.retriever import RetrievedChunk
 from services.graphrag.workbook_rag import (
-    classify_query_domain,
     classify_workbook_query,
     client_has_workbook_chunks,
     client_is_mixed,
     resolve_budget_mode,
-    resolve_use_dictionary_prompt,
 )
 from services.langchain.prompts import (
     DATA_DICTIONARY_SYSTEM_PROMPT,
@@ -30,6 +31,7 @@ from services.langchain.prompts import (
     SYSTEM_PROMPT,
 )
 from services.langchain.rag_chain import format_context_from_chunks, stream_rag_tokens
+from services.langchain.rag_context import RAGFitResult
 from services.llm.token_budget import fit_chunks_to_token_budget
 
 CATALOG_ABSTAIN_MESSAGE = (
@@ -37,29 +39,39 @@ CATALOG_ABSTAIN_MESSAGE = (
     "Please re-ingest the spreadsheet workbook for this client."
 )
 
+WORKBOOK_INTENTS = frozenset({
+    "catalog",
+    "table",
+    "table_by_definition",
+    "database",
+    "column",
+    "code",
+})
 
-def _retrieve_chunks(client_id: str, message: str) -> list[RetrievedChunk]:
-    wb_intent = classify_workbook_query(message)
 
-    if wb_intent == "catalog" and client_has_workbook_chunks(client_id):
+def _retrieve_chunks(
+    client_id: str, message: str, profile: RetrievalProfile
+) -> list[RetrievedChunk]:
+    wb_intent = profile.workbook_intent
+
+    if wb_intent == "catalog" and profile.has_workbook:
         return workbook_multi_hop_search(client_id, message)
 
-    if client_is_mixed(client_id):
-        domain = classify_query_domain(message)
-        if domain == "narrative":
-            return hybrid_search(client_id, message, chunk_types=["row"])
-        if domain == "workbook" or wb_intent in (
-            "table",
-            "database",
-            "column",
-            "code",
-        ):
-            return workbook_multi_hop_search(client_id, message)
-        return mixed_document_search(client_id, message)
+    if profile.domain == "narrative":
+        return hybrid_search(client_id, message, chunk_types=["row"])
 
-    if settings.MULTI_HOP_ENABLED and client_has_workbook_chunks(client_id):
+    if profile.domain == "workbook" or wb_intent in WORKBOOK_INTENTS:
+        return workbook_multi_hop_search(client_id, message)
+
+    if profile.is_mixed_client:
+        return mixed_document_search(client_id, message, profile=profile)
+
+    if wb_intent == "table_by_definition" and profile.has_workbook:
+        return workbook_multi_hop_search(client_id, message)
+
+    if settings.MULTI_HOP_ENABLED and profile.has_workbook:
         return multi_hop_search(client_id, message)
-    return hybrid_search(client_id, message)
+    return hybrid_search(client_id, message, chunk_types=["row"])
 
 
 def _inject_catalog_chunk(
@@ -119,63 +131,116 @@ def _format_context_with_table_definition(
     return format_context_from_chunks(fitted)
 
 
-def _system_prompt_for_client(client_id: str, message: str) -> tuple[str, bool, bool, str]:
-    """Returns (system_prompt, use_dictionary_prompt, use_mixed_prompt, budget_mode)."""
-    use_dictionary = resolve_use_dictionary_prompt(client_id, message)
-    budget_mode = resolve_budget_mode(client_id, message)
+def _format_context_with_table_by_definition(
+    message: str, fitted: list[RetrievedChunk], client_id: str
+) -> str:
+    signals = parse_query_signals(message, client_id)
+    if signals.get("workbook_intent") != "table_by_definition":
+        return format_context_from_chunks(fitted)
+    for chunk in fitted:
+        if (chunk.chunk_type or "") == "table_definition":
+            definition = extract_definition_from_table_chunk(chunk)
+            if definition:
+                table = chunk.table_name or "unknown"
+                sheet = chunk.sheet_name or ""
+                prefix = (
+                    f"Matching table for the quoted definition (answer with this table name): "
+                    f"Table: {table} | Definition: {definition}"
+                    + (f" | Sheet: {sheet}" if sheet else "")
+                )
+                return prefix + "\n\n---\n\n" + format_context_from_chunks(fitted)
+    return format_context_from_chunks(fitted)
 
-    if client_is_mixed(client_id):
-        domain = classify_query_domain(message)
-        wb_intent = classify_workbook_query(message)
-        if domain == "workbook" or wb_intent in (
-            "catalog",
-            "table",
-            "database",
-            "column",
-            "code",
-        ):
-            return DATA_DICTIONARY_SYSTEM_PROMPT, True, False, budget_mode
-        if domain == "general":
-            return MIXED_SYSTEM_PROMPT, False, True, budget_mode
-        return SYSTEM_PROMPT, False, False, budget_mode
 
-    if use_dictionary:
-        return DATA_DICTIONARY_SYSTEM_PROMPT, True, False, budget_mode
-    return SYSTEM_PROMPT, False, False, budget_mode
+def _budget_mode_for_profile(profile: RetrievalProfile, client_id: str, message: str) -> str:
+    intent_modes = {
+        "table": "workbook_table",
+        "table_by_definition": "workbook_table",
+        "database": "workbook_database",
+        "catalog": "workbook_catalog",
+        "column": "workbook_column",
+        "code": "workbook_code",
+    }
+    if profile.domain == "narrative":
+        return "narrative"
+    if profile.domain == "workbook":
+        return intent_modes.get(profile.workbook_intent, "workbook")
+    if profile.is_mixed_client and profile.domain == "mixed":
+        return "mixed"
+    return resolve_budget_mode(client_id, message)
+
+
+def _system_prompt_for_profile(
+    profile: RetrievalProfile,
+) -> tuple[str, bool, bool]:
+    """Returns (system_prompt, use_dictionary_prompt, use_mixed_prompt)."""
+    wb_intent = profile.workbook_intent
+
+    if profile.is_mixed_client:
+        if profile.domain == "workbook" or wb_intent in WORKBOOK_INTENTS:
+            return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
+        if profile.domain == "mixed":
+            return MIXED_SYSTEM_PROMPT, False, True
+        return SYSTEM_PROMPT, False, False
+
+    if profile.has_workbook and profile.domain == "workbook":
+        return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
+    if profile.has_workbook and wb_intent in WORKBOOK_INTENTS:
+        return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
+    return SYSTEM_PROMPT, False, False
 
 
 def _fit_context(
-    client_id: str, message: str, chunks: list[RetrievedChunk]
-) -> tuple[str, list[RetrievedChunk], bool, bool]:
-    system_prompt, use_dictionary, use_mixed, budget_mode = _system_prompt_for_client(
-        client_id, message
-    )
-    chunks = _inject_catalog_chunk(client_id, chunks)
+    client_id: str, message: str, chunks: list[RetrievedChunk], profile: RetrievalProfile
+) -> RAGFitResult:
+    system_prompt, use_dictionary, use_mixed = _system_prompt_for_profile(profile)
+    budget_mode = _budget_mode_for_profile(profile, client_id, message)
+
+    if profile.inject_catalog:
+        chunks = _inject_catalog_chunk(client_id, chunks)
+
     fitted = fit_chunks_to_token_budget(
         chunks, message, system_prompt, budget_mode=budget_mode
     )
-    fitted = _inject_catalog_chunk(client_id, fitted)
+
+    if profile.inject_catalog:
+        fitted = _inject_catalog_chunk(client_id, fitted)
+
+    citation_chunks = select_citation_chunks(fitted, profile)
 
     abstain = _catalog_abstain_message(client_id, message, fitted)
     if abstain:
-        return abstain, fitted, use_dictionary, use_mixed
+        return RAGFitResult(
+            context=abstain,
+            fitted_chunks=fitted,
+            citation_chunks=citation_chunks,
+            use_dictionary=use_dictionary,
+            use_mixed=use_mixed,
+        )
 
-    wb_intent = classify_workbook_query(message)
+    wb_intent = profile.workbook_intent
     if wb_intent == "catalog":
         context = _format_context_with_catalog_facts(message, fitted)
     elif wb_intent == "table":
         context = _format_context_with_table_definition(message, fitted)
+    elif wb_intent == "table_by_definition":
+        context = _format_context_with_table_by_definition(message, fitted, client_id)
     else:
         context = format_context_from_chunks(fitted)
 
-    return context, fitted, use_dictionary, use_mixed
+    return RAGFitResult(
+        context=context,
+        fitted_chunks=fitted,
+        citation_chunks=citation_chunks,
+        use_dictionary=use_dictionary,
+        use_mixed=use_mixed,
+    )
 
 
-def retrieve_and_fit_context(
-    client_id: str, message: str
-) -> tuple[str, list[RetrievedChunk], bool, bool]:
-    chunks = _retrieve_chunks(client_id, message)
-    return _fit_context(client_id, message, chunks)
+def retrieve_and_fit_context(client_id: str, message: str) -> RAGFitResult:
+    profile = resolve_retrieval_profile(client_id, message)
+    chunks = _retrieve_chunks(client_id, message, profile)
+    return _fit_context(client_id, message, chunks, profile)
 
 
 def stream_rag_answer(client_id: str, message: str) -> Iterator[str]:
@@ -183,21 +248,18 @@ def stream_rag_answer(client_id: str, message: str) -> Iterator[str]:
         yield "Error: GROQ_API_KEY is not configured."
         return
 
-    chunks = _retrieve_chunks(client_id, message)
-    context, fitted, use_dictionary, use_mixed = _fit_context(
-        client_id, message, chunks
-    )
+    result = retrieve_and_fit_context(client_id, message)
 
-    if context.startswith("I cannot list tables"):
-        yield context
+    if result.context.startswith("I cannot list tables"):
+        yield result.context
         return
 
     try:
         yield from stream_rag_tokens(
             message,
-            context,
-            use_dictionary_prompt=use_dictionary,
-            use_mixed_prompt=use_mixed,
+            result.context,
+            use_dictionary_prompt=result.use_dictionary,
+            use_mixed_prompt=result.use_mixed,
         )
     except LangChainException as exc:
         err = str(exc).lower()

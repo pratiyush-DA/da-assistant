@@ -5,6 +5,7 @@ from django.http import StreamingHttpResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from services.graphrag.citations import chunk_display_label
 from services.langchain.streaming import retrieve_and_fit_context, stream_rag_tokens
 from services.neo4j.repositories.conversation import ConversationRepository
 
@@ -19,6 +20,8 @@ def _chunks_to_sources(chunks) -> list[dict]:
             "page_number": c.page_number,
             "document_id": c.document_id,
             "source": c.source,
+            "chunk_type": c.chunk_type,
+            "display_label": chunk_display_label(c),
         }
         for c in chunks
     ]
@@ -58,10 +61,8 @@ class ChatStreamView(APIView):
             title = message.strip()[:60] or "New chat"
             conv_repo.set_title(conversation_id, title)
 
-        _context, fitted_chunks, use_dictionary, use_mixed = retrieve_and_fit_context(
-            client_id, message
-        )
-        sources = _chunks_to_sources(fitted_chunks)
+        rag_result = retrieve_and_fit_context(client_id, message)
+        sources = _chunks_to_sources(rag_result.citation_chunks)
 
         def event_stream():
             meta = json.dumps({"conversation_id": conversation_id})
@@ -74,9 +75,9 @@ class ChatStreamView(APIView):
             try:
                 for token in stream_rag_tokens(
                     message,
-                    _context,
-                    use_dictionary_prompt=use_dictionary,
-                    use_mixed_prompt=use_mixed,
+                    rag_result.context,
+                    use_dictionary_prompt=rag_result.use_dictionary,
+                    use_mixed_prompt=rag_result.use_mixed,
                 ):
                     full_response.append(token)
                     payload = json.dumps({"token": token})

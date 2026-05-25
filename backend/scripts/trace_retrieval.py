@@ -11,6 +11,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
 django.setup()
 
 from services.graphrag.context_extractors import catalog_names_from_chunks
+from services.graphrag.retrieval_profile import resolve_retrieval_profile
 from services.graphrag.workbook_rag import (
     classify_query_domain,
     classify_workbook_query,
@@ -28,29 +29,34 @@ def main(client_id: str, query: str) -> int:
     print(f"classify_query_domain: {classify_query_domain(query)}")
     print(f"client_has_workbook_chunks: {client_has_workbook_chunks(client_id)}")
 
-    chunks = streaming._retrieve_chunks(client_id, query)
+    profile = resolve_retrieval_profile(client_id, query)
+    print(f"retrieval_profile.domain: {profile.domain}")
+    print(f"retrieval_profile.inject_catalog: {profile.inject_catalog}")
+
+    chunks = streaming._retrieve_chunks(client_id, query, profile)
     print(f"\nretrieved chunks: {len(chunks)}")
     for c in chunks:
         print(
             f"  - {c.chunk_type} doc={c.document_id[:8] if c.document_id else 'n/a'}... "
-            f"table={c.table_name} col={c.column_name}"
+            f"table={c.table_name} col={c.column_name} source={c.source}"
         )
 
-    context, fitted, use_dict, use_mixed = streaming.retrieve_and_fit_context(
-        client_id, query
-    )
-    print(f"\nfitted chunks: {len(fitted)}")
-    for c in fitted:
-        print(f"  - {c.chunk_type}")
+    result = streaming.retrieve_and_fit_context(client_id, query)
+    print(f"\nfitted chunks: {len(result.fitted_chunks)}")
+    for c in result.fitted_chunks:
+        print(f"  - {c.chunk_type} source={c.source}")
+    print(f"citation chunks: {len(result.citation_chunks)}")
+    for c in result.citation_chunks:
+        print(f"  - cite {c.chunk_type} source={c.source}")
 
-    names = catalog_names_from_chunks(fitted)
+    names = catalog_names_from_chunks(result.fitted_chunks)
     print(f"catalog_names_from_chunks: {len(names)} names")
     if names:
         print(f"  first 8: {', '.join(names[:8])}")
 
-    print(f"\nuse_dictionary_prompt: {use_dict}")
-    print(f"use_mixed_prompt: {use_mixed}")
-    print(f"context starts with: {context[:120]!r}...")
+    print(f"\nuse_dictionary_prompt: {result.use_dictionary}")
+    print(f"use_mixed_prompt: {result.use_mixed}")
+    print(f"context starts with: {result.context[:120]!r}...")
     return 0
 
 

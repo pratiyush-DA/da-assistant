@@ -23,7 +23,19 @@ NARRATIVE_QUERY_PATTERN = re.compile(
     r"\b("
     r"phase\s*\d|project|architecture|scope|requirement|roadmap|"
     r"milestone|frd|documentation|implementation|deliverable|"
-    r"business\s+plan|system\s+design|ingestion|design\s+document"
+    r"business\s+plan|system\s+design|ingestion|design\s+document|"
+    r"who\s+is|who\s+are|where\s+does|where\s+do|works?\s+at|work\s+at|"
+    r"employed|employee|employer|job\s+title|role\s+at|"
+    r"person|people|staff|team\s+member"
+    r")\b",
+    re.I,
+)
+
+NARRATIVE_PERSONNEL_PATTERN = re.compile(
+    r"\b("
+    r"who\s+is|who\s+are|where\s+does|where\s+do|works?\s+at|work\s+at|"
+    r"employed|employee|employer|job\s+title|role\s+at|"
+    r"person|people|staff|team\s+member|reports?\s+to"
     r")\b",
     re.I,
 )
@@ -42,6 +54,7 @@ WORKBOOK_QUERY_PATTERN = re.compile(
 INTENT_CHUNK_TYPES: dict[str, list[str]] = {
     "database": ["database", "overview"],
     "table": ["table_definition", "table_catalog"],
+    "table_by_definition": ["table_definition", "table_catalog"],
     "column": ["column"],
     "code": ["code_set"],
     "catalog": ["table_catalog"],
@@ -55,7 +68,13 @@ INTENT_CHUNK_TYPES: dict[str, list[str]] = {
     ],
 }
 
-NO_COLUMN_SECONDARY_INTENTS = frozenset({"table", "database", "catalog", "code"})
+NO_COLUMN_SECONDARY_INTENTS = frozenset({
+    "table",
+    "table_by_definition",
+    "database",
+    "catalog",
+    "code",
+})
 
 NARRATIVE_SIGNAL_PATTERN = re.compile(
     r"\b(phase\s*\d|architecture|ingestion|requirements?|implementation|"
@@ -101,8 +120,21 @@ def client_has_workbook_chunks(client_id: UUID | str) -> bool:
         return record is not None
 
 
-def classify_workbook_query(query: str) -> str:
+def classify_workbook_query(
+    query: str,
+    *,
+    quoted_definition: str | None = None,
+    entity_table: str | None = None,
+    column_name: str | None = None,
+    sheet_hint: str | None = None,
+) -> str:
     q = query.lower()
+    if quoted_definition or re.search(
+        r"\b(?:which\s+table\s+name|table\s+has\s+the\s+following\s+table\s+definition|"
+        r"following\s+table\s+definition)\b",
+        q,
+    ):
+        return "table_by_definition"
     if re.search(r"\b(list|how many|name.*tables|tables in)\b", q):
         return "catalog"
     if re.search(r"\b(code\s*set|permissible|lookup|enumerat|meaning of)\b", q):
@@ -113,7 +145,15 @@ def classify_workbook_query(query: str) -> str:
         return "database"
     if re.search(r"\b(purpose of|table purpose|what is the .+ table)\b", q):
         return "table"
-    if re.search(r"\b(column|field|datatype|data type|definition of)\b", q):
+    if re.search(
+        r"\b(columndefinition|column\s+definition|datatype|data\s*type|definition\s+of)\b",
+        q,
+    ) or (
+        column_name
+        and (entity_table or sheet_hint or re.search(r"\b(column|field)\b", q))
+    ):
+        return "column"
+    if re.search(r"\b(column|field)\b", q) and entity_table:
         return "column"
     if re.search(r"\b(relationship|ontology|intro|overview)\b", q):
         return "database"
@@ -139,6 +179,8 @@ def _narrative_query_strength(query: str) -> int:
     score = 0
     if NARRATIVE_QUERY_PATTERN.search(q):
         score += 2
+    if NARRATIVE_PERSONNEL_PATTERN.search(q):
+        score += 2
     if re.search(r"phase\s*\d", q, re.I):
         score += 2
     if "project" in q and "table" not in q:
@@ -146,8 +188,20 @@ def _narrative_query_strength(query: str) -> int:
     return score
 
 
+def query_has_workbook_signals(query: str, workbook_intent: str | None = None) -> bool:
+    if workbook_intent and workbook_intent != "general":
+        return True
+    return bool(WORKBOOK_QUERY_PATTERN.search(query))
+
+
+def query_has_narrative_personnel_signals(query: str) -> bool:
+    return bool(NARRATIVE_PERSONNEL_PATTERN.search(query))
+
+
 def _query_spans_both_domains(query: str) -> bool:
-    has_narr = bool(NARRATIVE_SIGNAL_PATTERN.search(query))
+    has_narr = bool(NARRATIVE_SIGNAL_PATTERN.search(query)) or query_has_narrative_personnel_signals(
+        query
+    )
     has_wb = bool(WORKBOOK_SIGNAL_PATTERN.search(query))
     if re.search(r"phase\s*\d", query, re.I) and re.search(
         r"\b(dictionary|spreadsheet|metadata)\b", query, re.I
@@ -179,6 +233,7 @@ def resolve_budget_mode(client_id: UUID | str, query: str) -> str:
     intent = classify_workbook_query(query)
     intent_modes = {
         "table": "workbook_table",
+        "table_by_definition": "workbook_table",
         "database": "workbook_database",
         "catalog": "workbook_catalog",
         "column": "workbook_column",

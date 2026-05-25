@@ -62,3 +62,55 @@ def test_workbook_multi_hop_catalog_intent(mock_search, mock_fetch):
 
     chunks = workbook_multi_hop_search(uuid4(), query, limit=5)
     assert any("Customer" in (c.child_text or c.chunk_text) for c in chunks)
+
+
+@patch("services.graphrag.multi_hop.lookup_column_chunks")
+@patch("services.graphrag.multi_hop.hybrid_search")
+def test_column_intent_pins_table_scoped_anchor(mock_search, mock_lookup):
+    from services.graphrag.multi_hop import workbook_multi_hop_search
+
+    section_i1 = _chunk(
+        "Table: SectionI-1 | Column: FullNameofPointofContact | "
+        "Definition: The complete name of the individual who handles report distribution.",
+        "column",
+        sheet_name="FOIA Fields",
+        table_name="SectionI-1",
+        column_name="FullNameofPointofContact",
+    )
+    mock_lookup.return_value = [section_i1]
+    mock_search.return_value = []
+
+    query = (
+        "On the FOIA Fields sheet, for table SectionI-1, what is the "
+        "ColumnDefinition for the column FullNameofPointofContact?"
+    )
+    chunks = workbook_multi_hop_search(uuid4(), query, limit=5)
+    assert chunks
+    assert chunks[0].table_name == "SectionI-1"
+    mock_lookup.assert_called_once()
+    call_kw = mock_lookup.call_args.kwargs
+    assert call_kw.get("table_name") == "SectionI-1"
+
+
+@patch("services.graphrag.multi_hop.lookup_table_by_definition")
+@patch("services.graphrag.multi_hop.hybrid_search")
+def test_table_by_definition_intent_uses_metadata(mock_search, mock_lookup):
+    from services.graphrag.multi_hop import workbook_multi_hop_search
+
+    agency = _chunk(
+        "Table: Agency | Definition: Organization responsible for issuing "
+        "the FOIA annual report | Sheet: FOIA Tables",
+        "table_definition",
+        sheet_name="FOIA Tables",
+        table_name="Agency",
+    )
+    mock_lookup.return_value = [agency]
+    mock_search.return_value = []
+
+    query = (
+        'which table name has the following table definition '
+        '"Organization responsible for issuing the FOIA annual report"'
+    )
+    chunks = workbook_multi_hop_search(uuid4(), query, limit=5)
+    assert chunks
+    assert chunks[0].table_name == "Agency"
