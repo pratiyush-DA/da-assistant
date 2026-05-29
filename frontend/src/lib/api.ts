@@ -43,6 +43,12 @@ export type DocumentStatus = {
   chunk_count: number;
 };
 
+export type PlatformStats = {
+  client_count: number;
+  documents_ready: number;
+  user_count: number;
+};
+
 export type ChatMessage = {
   id: string;
   conversation_id?: string;
@@ -69,6 +75,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+export async function fetchPlatformStats(): Promise<PlatformStats> {
+  const data = await request<PlatformStats & Record<string, number>>("/api/stats/");
+  return {
+    client_count: data.client_count,
+    documents_ready: data.documents_ready,
+    user_count: data.user_count,
+  };
 }
 
 export async function fetchClients(): Promise<Client[]> {
