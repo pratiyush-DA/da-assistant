@@ -3,6 +3,7 @@ from .client import ClientRepository
 from .conversation import ConversationRepository
 from .document import DocumentRepository
 from .ingestion import IngestionRepository
+from .platform_stats import PlatformStatsRepository
 from .user import UserRepository
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "ConversationRepository",
     "DocumentRepository",
     "IngestionRepository",
+    "PlatformStatsRepository",
     "UserRepository",
 ]

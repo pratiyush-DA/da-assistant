@@ -9,7 +9,8 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
   title: "Data Axle — Business Intelligence Platform",
-  description: "Neo4j GraphRAG Business Assistant",
+  description:
+    "Upload documents by client, ask questions in everyday language, and get answers backed by your files.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
