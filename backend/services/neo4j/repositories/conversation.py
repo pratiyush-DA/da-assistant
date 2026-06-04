@@ -114,6 +114,17 @@ class ConversationRepository:
             )
         return True
 
+    def delete_by_client(self, client_id: str) -> None:
+        with get_driver().session(database=settings.NEO4J_DATABASE) as session:
+            session.run(
+                """
+                MATCH (conv:Conversation)-[:FOR_CLIENT]->(cl:Client {id: $client_id})
+                OPTIONAL MATCH (conv)-[:HAS_MESSAGE]->(m:ChatMessage)
+                DETACH DELETE conv, m
+                """,
+                client_id=client_id,
+            )
+
     def create_message(
         self,
         conversation_id: str,

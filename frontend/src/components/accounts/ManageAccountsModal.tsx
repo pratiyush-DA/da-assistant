@@ -11,6 +11,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   initialTab?: AccountsTab;
+  onClientsChanged?: () => void;
 };
 
 const TABS: { id: AccountsTab; label: string }[] = [
@@ -18,7 +19,12 @@ const TABS: { id: AccountsTab; label: string }[] = [
   { id: "clients", label: "Add & Manage Clients" },
 ];
 
-export function ManageAccountsModal({ open, onClose, initialTab = "users" }: Props) {
+export function ManageAccountsModal({
+  open,
+  onClose,
+  initialTab = "users",
+  onClientsChanged,
+}: Props) {
   const [tab, setTab] = useState<AccountsTab>(initialTab);
 
   useEffect(() => {
@@ -55,7 +61,9 @@ export function ManageAccountsModal({ open, onClose, initialTab = "users" }: Pro
         {tab === "users" && (
           <UserManagementPanel active onUseAsMe={onClose} />
         )}
-        {tab === "clients" && <ClientManagementPanel active />}
+        {tab === "clients" && (
+          <ClientManagementPanel active onClientsChanged={onClientsChanged} />
+        )}
       </div>
     </div>
   );
