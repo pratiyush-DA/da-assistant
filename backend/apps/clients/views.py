@@ -23,3 +23,13 @@ class ClientListCreateView(APIView):
         repo = ClientRepository()
         client = repo.create(name=serializer.validated_data["name"])
         return Response(ClientSerializer(client).data, status=status.HTTP_201_CREATED)
+
+
+class ClientDetailView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def delete(self, request, pk):
+        if ClientRepository().delete_cascade(str(pk)):
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(status=status.HTTP_404_NOT_FOUND)

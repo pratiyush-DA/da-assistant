@@ -132,7 +132,11 @@ export default function HomePage() {
         </Link>
       </div>
 
-      <ManageAccountsModal open={accountsOpen} onClose={() => setAccountsOpen(false)} />
+      <ManageAccountsModal
+        open={accountsOpen}
+        onClose={() => setAccountsOpen(false)}
+        onClientsChanged={loadStats}
+      />
     </div>
   );
 }

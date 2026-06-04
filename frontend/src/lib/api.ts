@@ -98,6 +98,10 @@ export async function createClient(name: string): Promise<Client> {
   });
 }
 
+export async function deleteClient(clientId: string): Promise<void> {
+  return request<void>(`/api/clients/${clientId}/`, { method: "DELETE" });
+}
+
 export async function fetchUsers(q?: string): Promise<User[]> {
   const params = q ? `?q=${encodeURIComponent(q)}` : "";
   return request<User[]>(`/api/users/${params}`);

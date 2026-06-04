@@ -1,26 +1,31 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Client, createClient, fetchClients } from "@/lib/api";
+import { Trash2 } from "lucide-react";
+import { Client, createClient, deleteClient, fetchClients } from "@/lib/api";
 import { useClientContext } from "@/context/ClientContext";
 
 type Props = {
   active: boolean;
+  onClientsChanged?: () => void;
 };
 
-export function ClientManagementPanel({ active }: Props) {
+export function ClientManagementPanel({ active, onClientsChanged }: Props) {
   const { clientId, setClientId } = useClientContext();
   const [clients, setClients] = useState<Client[]>([]);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const data = await fetchClients();
       setClients(data);
+      return data;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load clients");
+      return [];
     }
   }, []);
 
@@ -39,10 +44,33 @@ export function ClientManagementPanel({ active }: Props) {
       setNewName("");
       await load();
       setClientId(client.id);
+      onClientsChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create client");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDelete = async (client: Client) => {
+    const confirmed = window.confirm(
+      `Delete "${client.name}" and all its documents, chats, and indexed data? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingId(client.id);
+    setError(null);
+    try {
+      await deleteClient(client.id);
+      const remaining = await load();
+      if (clientId === client.id) {
+        setClientId(remaining[0]?.id ?? null);
+      }
+      onClientsChanged?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete client");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -78,21 +106,32 @@ export function ClientManagementPanel({ active }: Props) {
         {clients.map((c) => (
           <li key={c.id} className="flex items-center justify-between gap-2 py-3">
             <p
-              className={`truncate text-sm font-medium ${
+              className={`min-w-0 flex-1 truncate text-sm font-medium ${
                 clientId === c.id ? "text-primary" : "text-gray-900"
               }`}
             >
               {c.name}
             </p>
-            <button
-              type="button"
-              onClick={() => setClientId(c.id)}
-              className={`shrink-0 text-xs hover:underline ${
-                clientId === c.id ? "font-medium text-primary" : "text-gray-600"
-              }`}
-            >
-              {clientId === c.id ? "Selected" : "Select"}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleDelete(c)}
+                disabled={deletingId === c.id}
+                aria-label={`Delete client ${c.name}`}
+                className="rounded p-1.5 text-red-600 hover:bg-red-50 disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setClientId(c.id)}
+                className={`text-xs hover:underline ${
+                  clientId === c.id ? "font-medium text-primary" : "text-gray-600"
+                }`}
+              >
+                {clientId === c.id ? "Selected" : "Select"}
+              </button>
+            </div>
           </li>
         ))}
       </ul>
