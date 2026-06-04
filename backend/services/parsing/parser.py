@@ -6,10 +6,18 @@ from .types import ParsedElement
 
 
 def parse_document_generic(file_path: str) -> list[ParsedElement]:
-    from unstructured.partition.auto import partition
-
     path = Path(file_path)
-    elements = partition(filename=str(path))
+    ext = path.suffix.lower()
+
+    # PDF: use pdfminer "fast" strategy (no layout CV models). Requires libGL for cv2 import in Docker.
+    if ext == ".pdf":
+        from unstructured.partition.pdf import partition_pdf
+
+        elements = partition_pdf(filename=str(path), strategy="fast")
+    else:
+        from unstructured.partition.auto import partition
+
+        elements = partition(filename=str(path))
 
     parsed: list[ParsedElement] = []
     for el in elements:
