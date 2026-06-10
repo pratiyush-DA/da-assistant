@@ -23,7 +23,9 @@ export async function streamChat(
   if (conversationId) body.conversation_id = conversationId;
   if (documentIds && documentIds.length > 0) {
     body.document_ids = documentIds;
-    body.focus_document_id = documentIds[0];
+    if (documentIds.length === 1) {
+      body.focus_document_id = documentIds[0];
+    }
   }
 
   const res = await fetch(`${API_URL}/api/chat/`, {

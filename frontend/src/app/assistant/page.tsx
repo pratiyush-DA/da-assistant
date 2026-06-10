@@ -21,7 +21,6 @@ import {
   fetchConversations,
   fetchDocumentStatus,
   fetchDocuments,
-  uploadDocument,
 } from "@/lib/api";
 import { streamChat } from "@/lib/sse";
 
@@ -36,7 +35,7 @@ export default function AssistantPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accountsOpen, setAccountsOpen] = useState(false);
-  const [focusDocumentId, setFocusDocumentId] = useState<string | null>(null);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
 
   const ready = Boolean(clientId && userId);
 
@@ -102,7 +101,7 @@ export default function AssistantPage() {
   useEffect(() => {
     setConversationId(null);
     setMessages([]);
-    setFocusDocumentId(null);
+    setSelectedDocumentIds([]);
   }, [clientId, userId]);
 
   useEffect(() => {
@@ -128,6 +127,7 @@ export default function AssistantPage() {
       const conv = await createConversation(userId, clientId);
       setConversationId(conv.id);
       setMessages([]);
+      setSelectedDocumentIds([]);
       await loadConversations();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start new chat");
@@ -136,6 +136,7 @@ export default function AssistantPage() {
 
   const handleSelectConversation = async (id: string) => {
     setConversationId(id);
+    setSelectedDocumentIds([]);
     await loadMessages(id);
   };
 
@@ -145,6 +146,7 @@ export default function AssistantPage() {
       if (conversationId === id) {
         setConversationId(null);
         setMessages([]);
+        setSelectedDocumentIds([]);
       }
       await loadConversations();
     } catch (e) {
@@ -153,7 +155,7 @@ export default function AssistantPage() {
   };
 
   const handleSend = async (text: string) => {
-    if (!clientId || !userId) return;
+    if (!clientId || !userId || selectedDocumentIds.length === 0) return;
     setError(null);
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setLoading(true);
@@ -163,7 +165,6 @@ export default function AssistantPage() {
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
     try {
-      const docScope = focusDocumentId ? [focusDocumentId] : undefined;
       await streamChat(clientId, userId, text, {
         onConversationId: (id) => {
           activeConvId = id;
@@ -191,19 +192,12 @@ export default function AssistantPage() {
           loadConversations();
         },
         onError: (msg) => setError(msg),
-      }, activeConvId, docScope);
+      }, activeConvId, selectedDocumentIds);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Chat failed");
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleAttach = async (file: File) => {
-    if (!clientId) return;
-    const doc = await uploadDocument(clientId, file);
-    setFocusDocumentId(doc.id);
-    loadDocuments();
   };
 
   return (
@@ -230,8 +224,10 @@ export default function AssistantPage() {
         <MessageThread messages={messages} loading={loading} />
         <InputBar
           disabled={!ready || loading}
+          documents={documents}
+          selectedDocumentIds={selectedDocumentIds}
+          onSelectionChange={setSelectedDocumentIds}
           onSend={handleSend}
-          onAttach={handleAttach}
         />
       </div>
 

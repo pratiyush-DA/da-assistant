@@ -14,7 +14,7 @@ class ChatRequestSerializer(serializers.Serializer):
         child=serializers.UUIDField(),
         required=False,
         allow_empty=True,
-        max_length=10,
+        max_length=50,
     )
     focus_document_id = serializers.UUIDField(required=False, allow_null=True)
 
