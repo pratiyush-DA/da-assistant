@@ -3,14 +3,19 @@
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from services.graphrag.client_corpus import (
+    document_for_id,
+    get_client_corpus_profile,
+    top_affinity_document_id,
+    document_is_narrative_only,
+    document_is_workbook_only,
+)
+from services.graphrag.domain_scoring import score_query_domain
 from services.graphrag.query_signals import parse_query_signals
 from services.graphrag.workbook_rag import (
     _query_spans_both_domains,
-    classify_query_domain,
     client_has_workbook_chunks,
-    client_is_mixed,
     intent_chunk_types,
-    query_has_narrative_personnel_signals,
     query_has_workbook_signals,
 )
 
@@ -26,7 +31,7 @@ WORKBOOK_INTENTS = frozenset({
 
 @dataclass(frozen=True)
 class RetrievalProfile:
-    domain: str  # narrative | workbook | mixed
+    domain: str  # narrative | workbook | mixed | general
     workbook_intent: str
     is_mixed_client: bool
     has_workbook: bool
@@ -36,6 +41,12 @@ class RetrievalProfile:
     citation_budget: int = 8
     narrative_limit_ratio: float = 1.0
     workbook_limit_ratio: float = 0.0
+    narrative_score: float = 0.0
+    workbook_score: float = 0.0
+    workbook_confidence: float = 0.0
+    document_affinity: dict[str, float] = field(default_factory=dict)
+    entity_in_workbook: bool | None = None
+    focus_document_ids: tuple[str, ...] = ()
 
 
 def _citation_types_for_intent(workbook_intent: str) -> frozenset[str]:
@@ -53,44 +64,63 @@ def _retrieval_types_for_domain(domain: str, workbook_intent: str) -> frozenset[
     return frozenset({"row"}) | frozenset(intent_chunk_types(workbook_intent))
 
 
+def _ratios_from_affinity(
+    domain: str,
+    wb_intent: str,
+    message: str,
+    affinity: dict[str, float],
+    corpus_profile,
+) -> tuple[float, float]:
+    if domain == "narrative":
+        return 1.0, 0.0
+    if domain == "workbook":
+        return 0.0, 1.0
+
+    top_id = top_affinity_document_id(affinity, corpus_profile)
+    if top_id:
+        top_doc = document_for_id(corpus_profile, top_id)
+        if top_doc and document_is_narrative_only(top_doc):
+            return 0.85, 0.15
+        if top_doc and document_is_workbook_only(top_doc):
+            return 0.15, 0.85
+
+    if query_has_workbook_signals(message, wb_intent):
+        return 0.55, 0.45
+    return 0.75, 0.25
+
+
 def resolve_retrieval_profile(
     client_id: UUID | str,
     message: str,
+    document_ids: list[str] | None = None,
 ) -> RetrievalProfile:
     signals = parse_query_signals(message, client_id)
-    wb_intent = signals.get("workbook_intent") or "general"
-    mixed = client_is_mixed(client_id)
+    scored = score_query_domain(client_id, message, signals)
+    corpus = get_client_corpus_profile(client_id)
+    mixed = corpus.is_mixed
     has_wb = client_has_workbook_chunks(client_id)
 
-    domain = classify_query_domain(message)
-
-    if query_has_narrative_personnel_signals(message):
-        domain = "narrative"
-
-    if mixed and domain == "general" and not query_has_workbook_signals(
-        message, wb_intent
-    ):
-        domain = "narrative"
-
-    if wb_intent in WORKBOOK_INTENTS and domain != "narrative":
-        domain = "workbook"
+    domain = scored.domain
+    wb_intent = scored.workbook_intent
 
     if _query_spans_both_domains(message):
-        domain = "mixed"
+        domain = "mixed" if mixed else domain
+
+    focus_ids: tuple[str, ...] = ()
+    if document_ids:
+        focus_ids = tuple(str(d) for d in document_ids)
 
     inject_catalog = wb_intent == "catalog"
 
+    narr_ratio, wb_ratio = _ratios_from_affinity(
+        domain, wb_intent, message, scored.document_affinity, corpus
+    )
+
     if domain == "narrative":
-        narr_ratio, wb_ratio = 1.0, 0.0
         citation_types = frozenset({"row"})
     elif domain == "workbook":
-        narr_ratio, wb_ratio = 0.0, 1.0
         citation_types = _citation_types_for_intent(wb_intent)
     else:
-        if query_has_workbook_signals(message, wb_intent):
-            narr_ratio, wb_ratio = 0.55, 0.45
-        else:
-            narr_ratio, wb_ratio = 0.75, 0.25
         citation_types = frozenset({"row"}) | _citation_types_for_intent(wb_intent)
         if wb_intent != "catalog":
             citation_types = frozenset(
@@ -110,4 +140,10 @@ def resolve_retrieval_profile(
         citation_budget=8,
         narrative_limit_ratio=narr_ratio,
         workbook_limit_ratio=wb_ratio,
+        narrative_score=scored.narrative_score,
+        workbook_score=scored.workbook_score,
+        workbook_confidence=scored.workbook_confidence,
+        document_affinity=scored.document_affinity,
+        entity_in_workbook=scored.entity_in_workbook,
+        focus_document_ids=focus_ids,
     )

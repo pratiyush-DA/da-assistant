@@ -67,6 +67,37 @@ def _sort_chunks_for_budget(
     return list(chunks)
 
 
+def _apply_mixed_token_floor(
+    sorted_chunks: list[RetrievedChunk],
+    context_budget: int,
+    floor_ratio: float,
+) -> list[RetrievedChunk]:
+    """Reserve narrative row token budget before workbook chunks consume the pool."""
+    row_chunks = sorted(
+        [c for c in sorted_chunks if (c.chunk_type or "") == "row"],
+        key=lambda c: -c.score,
+    )
+    other_chunks = sorted(
+        [c for c in sorted_chunks if (c.chunk_type or "") != "row"],
+        key=lambda c: -c.score,
+    )
+    if not row_chunks or not other_chunks:
+        return sorted_chunks
+
+    floor = max(64, int(context_budget * floor_ratio))
+    reserved_rows: list[RetrievedChunk] = []
+    used = 0
+    for chunk in row_chunks:
+        block = _format_block(chunk, len(reserved_rows) + 1, "")
+        block_tokens = count_tokens(block)
+        if used + block_tokens <= floor:
+            reserved_rows.append(chunk)
+            used += block_tokens
+
+    remaining_rows = [c for c in row_chunks if c not in reserved_rows]
+    return reserved_rows + other_chunks + remaining_rows
+
+
 def _apply_mixed_slot_reservation(
     sorted_chunks: list[RetrievedChunk], limit: int
 ) -> list[RetrievedChunk]:
@@ -118,6 +149,11 @@ def fit_chunks_to_token_budget(
     if budget_mode == "mixed":
         sorted_chunks = _apply_mixed_slot_reservation(
             sorted_chunks, settings.VECTOR_SEARCH_LIMIT
+        )
+        sorted_chunks = _apply_mixed_token_floor(
+            sorted_chunks,
+            context_budget,
+            settings.MIXED_NARRATIVE_TOKEN_FLOOR_RATIO,
         )
 
     included: list[RetrievedChunk] = []

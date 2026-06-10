@@ -22,6 +22,10 @@ function formatSourceLabel(s: NonNullable<Message["sources"]>[number]): string {
   return "Source";
 }
 
+function stripDuplicateSourcesSection(content: string): string {
+  return content.replace(/\n##\s*Sources\b[\s\S]*$/i, "").trimEnd();
+}
+
 function uniqueSourceLabels(sources: NonNullable<Message["sources"]>): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -57,7 +61,11 @@ export function MessageThread({ messages, loading }: Props) {
           }`}
         >
           {msg.role === "assistant" ? (
-            <ReactMarkdown className="prose prose-sm max-w-none">{msg.content}</ReactMarkdown>
+            <ReactMarkdown className="prose prose-sm max-w-none">
+              {msg.sources && msg.sources.length > 0
+                ? stripDuplicateSourcesSection(msg.content)
+                : msg.content}
+            </ReactMarkdown>
           ) : (
             <p className="whitespace-pre-wrap">{msg.content}</p>
           )}

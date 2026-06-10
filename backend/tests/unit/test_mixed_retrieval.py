@@ -47,6 +47,7 @@ def _profile(domain: str, wb_intent: str = "general") -> RetrievalProfile:
         is_mixed_client=False,
         has_workbook=True,
         allowed_citation_types=frozenset({"database"}),
+        workbook_confidence=3.0,
     )
 
 

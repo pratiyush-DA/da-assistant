@@ -13,13 +13,18 @@ export async function streamChat(
   message: string,
   handlers: StreamHandlers,
   conversationId?: string | null,
+  documentIds?: string[],
 ): Promise<void> {
-  const body: Record<string, string> = {
+  const body: Record<string, unknown> = {
     client_id: clientId,
     user_id: userId,
     message,
   };
   if (conversationId) body.conversation_id = conversationId;
+  if (documentIds && documentIds.length > 0) {
+    body.document_ids = documentIds;
+    body.focus_document_id = documentIds[0];
+  }
 
   const res = await fetch(`${API_URL}/api/chat/`, {
     method: "POST",

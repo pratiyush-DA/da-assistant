@@ -36,6 +36,7 @@ export default function AssistantPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accountsOpen, setAccountsOpen] = useState(false);
+  const [focusDocumentId, setFocusDocumentId] = useState<string | null>(null);
 
   const ready = Boolean(clientId && userId);
 
@@ -101,6 +102,7 @@ export default function AssistantPage() {
   useEffect(() => {
     setConversationId(null);
     setMessages([]);
+    setFocusDocumentId(null);
   }, [clientId, userId]);
 
   useEffect(() => {
@@ -161,6 +163,7 @@ export default function AssistantPage() {
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
     try {
+      const docScope = focusDocumentId ? [focusDocumentId] : undefined;
       await streamChat(clientId, userId, text, {
         onConversationId: (id) => {
           activeConvId = id;
@@ -188,7 +191,7 @@ export default function AssistantPage() {
           loadConversations();
         },
         onError: (msg) => setError(msg),
-      }, activeConvId);
+      }, activeConvId, docScope);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Chat failed");
     } finally {
@@ -198,7 +201,8 @@ export default function AssistantPage() {
 
   const handleAttach = async (file: File) => {
     if (!clientId) return;
-    await uploadDocument(clientId, file);
+    const doc = await uploadDocument(clientId, file);
+    setFocusDocumentId(doc.id);
     loadDocuments();
   };
 

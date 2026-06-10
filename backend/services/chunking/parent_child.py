@@ -1,3 +1,4 @@
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -10,6 +11,21 @@ from services.parsing.types import ParsedElement
 
 TITLE_CATEGORIES = {"Title", "Header", "Heading"}
 TABLE_ROW_CATEGORY = "TableRow"
+SECTION_HEADER_PATTERN = re.compile(
+    r"^(?:Section\s+\d+|\d+(?:\.\d+)+\s+\S)",
+    re.I,
+)
+
+
+def _looks_like_section_header(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if SECTION_HEADER_PATTERN.match(stripped):
+        return True
+    if len(stripped) <= 120 and stripped.isupper() and " " in stripped:
+        return True
+    return False
 
 
 @dataclass
@@ -195,8 +211,11 @@ class ParentChildChunker:
         current_header = ""
 
         for el in elements:
-            if el.category in TITLE_CATEGORIES:
-                current_header = el.text
+            header_candidate = el.text.strip()
+            if el.category in TITLE_CATEGORIES or _looks_like_section_header(
+                header_candidate
+            ):
+                current_header = header_candidate
             for sent in self._split_sentences(el.text):
                 sentences.append((sent, el.page_number, current_header))
 

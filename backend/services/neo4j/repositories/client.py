@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from django.conf import settings
 
 from services.graphrag.client_catalog import clear_sheet_index_cache
+from services.graphrag.client_corpus import clear_corpus_cache
 from services.neo4j.driver import get_driver
 from services.neo4j.repositories.conversation import ConversationRepository
 from services.neo4j.repositories.document import DocumentRepository
@@ -87,4 +88,5 @@ class ClientRepository:
             )
 
         clear_sheet_index_cache(client_id)
+        clear_corpus_cache(client_id)
         return True

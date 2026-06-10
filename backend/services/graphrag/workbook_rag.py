@@ -87,6 +87,22 @@ WORKBOOK_SIGNAL_PATTERN = re.compile(
     re.I,
 )
 
+CATALOG_QUERY_PATTERN = re.compile(
+    r"(?:"
+    r"\b(?:list|show|enumerate|name)\s+(?:all\s+)?tables\b|"
+    r"\btables\s+in\s+(?:the\s+)?(?:dataset|dictionary|workbook|spreadsheet|database)\b|"
+    r"\btable\s*catalog\b|"
+    r"\bwhat\s+tables\s+(?:are\s+)?(?:in|exist)\b|"
+    r"\bhow\s+many\s+tables\b"
+    r")",
+    re.I,
+)
+
+
+def query_is_strict_catalog(query: str) -> bool:
+    """True only for spreadsheet table-catalog questions, not narrative list/count queries."""
+    return bool(CATALOG_QUERY_PATTERN.search(query))
+
 
 def client_has_narrative_chunks(client_id: UUID | str) -> bool:
     with get_driver().session(database=settings.NEO4J_DATABASE) as session:
@@ -135,7 +151,7 @@ def classify_workbook_query(
         q,
     ):
         return "table_by_definition"
-    if re.search(r"\b(list|how many|name.*tables|tables in)\b", q):
+    if query_is_strict_catalog(q):
         return "catalog"
     if re.search(r"\b(code\s*set|permissible|lookup|enumerat|meaning of)\b", q):
         return "code"

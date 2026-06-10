@@ -76,7 +76,13 @@ class DocumentDetailView(APIView):
         storage = get_storage_backend()
         if document.get("file_path"):
             storage.delete(document["file_path"])
+        client_id = document["client_id"]
         doc_repo.delete_cascade(str(pk))
+        from services.graphrag.client_catalog import clear_sheet_index_cache
+        from services.graphrag.client_corpus import clear_corpus_cache
+
+        clear_corpus_cache(client_id)
+        clear_sheet_index_cache(client_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def put(self, request, pk):

@@ -1,6 +1,8 @@
 """Hybrid vector + fulltext retrieval with RRF fusion."""
 
 import re
+from dataclasses import replace
+from typing import Callable
 from uuid import UUID
 
 from django.conf import settings
@@ -48,6 +50,36 @@ def _column_filter_clause(column_names: list[str] | None, params: dict) -> str:
     )
 
 
+def _document_filter_clause(document_ids: list[str] | None, params: dict) -> str:
+    if not document_ids:
+        return ""
+    params["document_ids"] = document_ids
+    return " AND parent.document_id IN $document_ids"
+
+
+def apply_score_boost(
+    chunks: list[RetrievedChunk],
+    score_boost: Callable[[RetrievedChunk], float] | None,
+) -> list[RetrievedChunk]:
+    if not score_boost or not chunks:
+        return chunks
+    boosted = [
+        replace(c, score=c.score + score_boost(c))
+        for c in chunks
+    ]
+    boosted.sort(key=lambda c: -c.score)
+    return boosted
+
+
+def affinity_boost_fn(affinity: dict[str, float]) -> Callable[[RetrievedChunk], float]:
+    weight = settings.RAG_DOCUMENT_AFFINITY_WEIGHT
+
+    def boost(chunk: RetrievedChunk) -> float:
+        return weight * affinity.get(chunk.document_id, 0.0)
+
+    return boost
+
+
 def _record_to_chunk(record: dict, score: float) -> RetrievedChunk:
     return RetrievedChunk(
         id=record["id"],
@@ -74,6 +106,7 @@ def _vector_search(
     table_names: list[str] | None,
     sheet_hint: str | None,
     column_names: list[str] | None,
+    document_ids: list[str] | None = None,
 ) -> list[dict]:
     type_filter = ""
     params: dict = {
@@ -92,6 +125,7 @@ def _vector_search(
         type_filter += " AND node.sheet_name CONTAINS $sheet_hint"
         params["sheet_hint"] = sheet_hint
     type_filter += _column_filter_clause(column_names, params)
+    doc_filter = _document_filter_clause(document_ids, params)
 
     cypher = f"""
     CALL db.index.vector.queryNodes($index_name, $limit, $embedding)
@@ -103,6 +137,7 @@ def _vector_search(
     LIMIT $limit
     MATCH (node)-[:PART_OF]->(parent:Chunk)
     MATCH (parent)<-[:HAS_CHUNK]-(doc:Document)
+    WHERE true {doc_filter}
     RETURN node.id AS id,
            parent.text AS chunk_text,
            node.text AS child_text,
@@ -130,6 +165,7 @@ def _fulltext_search(
     table_names: list[str] | None,
     sheet_hint: str | None,
     column_names: list[str] | None,
+    document_ids: list[str] | None = None,
 ) -> list[dict]:
     lucene_q = _escape_lucene(query)
     if not lucene_q.strip():
@@ -152,6 +188,7 @@ def _fulltext_search(
         type_filter += " AND node.sheet_name CONTAINS $sheet_hint"
         params["sheet_hint"] = sheet_hint
     type_filter += _column_filter_clause(column_names, params)
+    doc_filter = _document_filter_clause(document_ids, params)
 
     cypher = f"""
     CALL db.index.fulltext.queryNodes($index_name, $query)
@@ -163,6 +200,7 @@ def _fulltext_search(
     LIMIT $limit
     MATCH (node)-[:PART_OF]->(parent:Chunk)
     MATCH (parent)<-[:HAS_CHUNK]-(doc:Document)
+    WHERE true {doc_filter}
     RETURN node.id AS id,
            parent.text AS chunk_text,
            node.text AS child_text,
@@ -211,6 +249,8 @@ def hybrid_search(
     table_names: list[str] | None = None,
     sheet_hint: str | None = None,
     column_names: list[str] | None = None,
+    document_ids: list[str] | None = None,
+    score_boost: Callable[[RetrievedChunk], float] | None = None,
     vector_only: bool = False,
 ) -> list[RetrievedChunk]:
     limit = limit or settings.VECTOR_SEARCH_LIMIT
@@ -234,6 +274,7 @@ def hybrid_search(
             table_names,
             sheet_hint,
             column_names,
+            document_ids,
         )
         if settings.HYBRID_SEARCH_ENABLED and not vector_only:
             ft_hits = _fulltext_search(
@@ -245,6 +286,7 @@ def hybrid_search(
                 table_names,
                 sheet_hint,
                 column_names,
+                document_ids,
             )
             merged = rrf_merge([vector_hits, ft_hits])
         else:
@@ -261,4 +303,5 @@ def hybrid_search(
         if len(deduped) >= limit:
             break
 
-    return rerank_chunks(query, deduped)
+    ranked = rerank_chunks(query, deduped)
+    return apply_score_boost(ranked, score_boost)
