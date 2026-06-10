@@ -19,6 +19,17 @@ def test_code_intent():
 
 def test_catalog_intent():
     assert classify_workbook_query("List 5 tables in the dataset") == "catalog"
+    assert classify_workbook_query("What tables are in the dictionary?") == "catalog"
+    assert classify_workbook_query("How many tables are in the workbook?") == "catalog"
+
+
+def test_narrative_list_questions_are_not_catalog():
+    q1 = "List the five key client requirements defined in the change request for TABLE_A"
+    q2 = "How many new fields are being added to the promotional history tables and views?"
+    q3 = "What are the seven explicitly named rewards fields that must be added to tables?"
+    assert classify_workbook_query(q1) != "catalog"
+    assert classify_workbook_query(q2) != "catalog"
+    assert classify_workbook_query(q3) != "catalog"
 
 
 def test_intent_chunk_types_database():

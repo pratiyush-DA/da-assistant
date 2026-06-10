@@ -1,0 +1,65 @@
+{
+  "name": "mixed_client_narrative_pdf",
+  "cases": [
+    {
+      "question": "What is the primary objective of the change request described in the upgrade plan?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "What is the timeline for the edge upgrade milestones?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "Who are the stakeholders responsible for sign-off?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "What are the acceptance criteria for the deployment?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "Summarize the risks called out in the project document.",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "What dependencies are listed before production cutover?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "What testing approach is required prior to release?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": ".xlsx"
+    },
+    {
+      "question": "What is the datatype for column OrderId in table TABLE_A?",
+      "expect_domain_in": ["workbook", "mixed"],
+      "expect_top_source_suffix": ".xlsx",
+      "forbid_source_suffix": null
+    },
+    {
+      "question": "List tables in the data dictionary catalog",
+      "expect_domain_in": ["workbook"],
+      "expect_top_source_suffix": ".xlsx",
+      "forbid_source_suffix": ".pdf"
+    },
+    {
+      "question": "What database fields are referenced in the monetary detail section of the plan?",
+      "expect_domain_in": ["narrative", "mixed"],
+      "expect_top_source_suffix": ".pdf",
+      "forbid_source_suffix": null
+    }
+  ]
+}

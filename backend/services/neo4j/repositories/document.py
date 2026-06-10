@@ -43,6 +43,12 @@ class DocumentRepository:
                 )
             return rows
 
+    def belongs_to_client(self, document_id: str, client_id: str) -> bool:
+        doc = self.get(document_id)
+        if not doc:
+            return False
+        return str(doc.get("client_id")) == str(client_id)
+
     def get(self, document_id: str) -> dict | None:
         with get_driver().session(database=settings.NEO4J_DATABASE) as session:
             record = session.run(

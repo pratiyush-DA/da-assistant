@@ -61,8 +61,23 @@ class ChatStreamView(APIView):
             title = message.strip()[:60] or "New chat"
             conv_repo.set_title(conversation_id, title)
 
-        rag_result = retrieve_and_fit_context(client_id, message)
+        doc_ids = [str(d) for d in serializer.validated_data.get("document_ids") or []]
+        focus = serializer.validated_data.get("focus_document_id")
+        if focus:
+            focus_str = str(focus)
+            if focus_str not in doc_ids:
+                doc_ids = [focus_str, *doc_ids]
+
+        rag_result = retrieve_and_fit_context(
+            client_id, message, document_ids=doc_ids or None
+        )
         sources = _chunks_to_sources(rag_result.citation_chunks)
+        abstain = (
+            rag_result.context.startswith("I cannot list tables")
+            or rag_result.context.startswith("No matching content")
+        )
+        if abstain:
+            sources = []
 
         def event_stream():
             meta = json.dumps({"conversation_id": conversation_id})
@@ -71,6 +86,25 @@ class ChatStreamView(APIView):
                 err = json.dumps({"error": "GROQ_API_KEY is not configured."})
                 yield f"data: {err}\n\n"
                 return
+            if abstain:
+                payload = json.dumps({"token": rag_result.context})
+                yield f"data: {payload}\n\n"
+                conv_repo.create_message(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=rag_result.context,
+                    sources=[],
+                )
+                done = json.dumps(
+                    {
+                        "done": True,
+                        "sources": [],
+                        "conversation_id": conversation_id,
+                    }
+                )
+                yield f"data: {done}\n\n"
+                return
+
             full_response = []
             try:
                 for token in stream_rag_tokens(

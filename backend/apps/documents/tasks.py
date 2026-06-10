@@ -97,6 +97,9 @@ def ingest_document(self, document_id: str):
             children=child_payloads,
         )
 
+        from services.graphrag.client_corpus import clear_corpus_cache
+
+        clear_corpus_cache(client_id)
         if is_spreadsheet_type(document["file_type"]) and is_workbook_dictionary(
             elements
         ):

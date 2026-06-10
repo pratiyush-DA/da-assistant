@@ -378,6 +378,8 @@ def mixed_document_search(
     limit: int | None = None,
     *,
     profile=None,
+    document_ids: list[str] | None = None,
+    score_boost=None,
 ) -> list[RetrievedChunk]:
     """Dual-path retrieval for clients with both workbook and narrative documents."""
     limit = limit or settings.VECTOR_SEARCH_LIMIT
@@ -416,10 +418,21 @@ def mixed_document_search(
     workbook_hits: list[RetrievedChunk] = []
     if narr_limit > 0:
         narrative_hits = hybrid_search(
-            client_id, query, limit=narr_limit, chunk_types=["row"]
+            client_id,
+            query,
+            limit=narr_limit,
+            chunk_types=["row"],
+            document_ids=document_ids,
+            score_boost=score_boost,
         )
     if wb_limit > 0:
-        workbook_hits = workbook_multi_hop_search(client_id, query, limit=wb_limit)
+        workbook_hits = workbook_multi_hop_search(
+            client_id,
+            query,
+            limit=wb_limit,
+            document_ids=document_ids,
+            score_boost=score_boost,
+        )
 
     lists: list[list[dict]] = []
     if narrative_hits:
@@ -428,19 +441,41 @@ def mixed_document_search(
         lists.append(_hits_to_dicts(workbook_hits))
 
     if not lists:
-        return hybrid_search(client_id, query, limit=limit)
+        return hybrid_search(
+            client_id,
+            query,
+            limit=limit,
+            chunk_types=["row"],
+            document_ids=document_ids,
+            score_boost=score_boost,
+        )
 
     merged = rrf_merge(lists)
     diversified = apply_document_diversity(merged, limit)
-    return rerank_chunks(query, diversified)
+    ranked = rerank_chunks(query, diversified)
+    if score_boost:
+        from services.graphrag.hybrid_retriever import apply_score_boost
+
+        return apply_score_boost(ranked, score_boost)
+    return ranked
 
 
 def workbook_multi_hop_search(
     client_id: UUID | str,
     query: str,
     limit: int | None = None,
+    *,
+    document_ids: list[str] | None = None,
+    score_boost=None,
 ) -> list[RetrievedChunk]:
+    from functools import partial
+
     limit = limit or settings.VECTOR_SEARCH_LIMIT
+    hs = partial(
+        hybrid_search,
+        document_ids=document_ids,
+        score_boost=score_boost,
+    )
     signals = parse_query_signals(query, client_id)
     expanded = expand_query(query, signals=signals)
     intent = signals.get("workbook_intent") or classify_workbook_query(query)
@@ -455,7 +490,7 @@ def workbook_multi_hop_search(
         primary_lists: list[list] = []
         phrase = signals.get("quoted_definition") or query
         for q in expanded[:3]:
-            hits = hybrid_search(
+            hits = hs(
                 client_id,
                 q,
                 limit=4,
@@ -476,7 +511,7 @@ def workbook_multi_hop_search(
             return pin_anchor_chunks([], anchors, min(limit, 2))
         primary_lists: list[list] = []
         for q in expanded[:3]:
-            hits = hybrid_search(
+            hits = hs(
                 client_id,
                 q,
                 limit=4,
@@ -506,7 +541,7 @@ def workbook_multi_hop_search(
     primary_lists = []
     search_limit = 3 if intent == "column" else limit
     for q in expanded[:4]:
-        hits = hybrid_search(
+        hits = hs(
             client_id,
             q,
             limit=search_limit,
@@ -529,7 +564,7 @@ def workbook_multi_hop_search(
     if intent in ("column", "general") and not table_names and intent != "column":
         table_lists: list[list] = []
         for q in expanded[:3]:
-            hits = hybrid_search(
+            hits = hs(
                 client_id,
                 q,
                 limit=5,
@@ -559,7 +594,7 @@ def workbook_multi_hop_search(
 
         secondary_lists: list[list] = []
         for q in expanded[:3] if intent == "column" else expanded:
-            hits = hybrid_search(
+            hits = hs(
                 client_id,
                 q,
                 limit=secondary_limit,
@@ -585,7 +620,7 @@ def workbook_multi_hop_search(
             ["table_catalog"] if intent == "catalog" else primary_types
         )
         for q in expanded[:2]:
-            hits = hybrid_search(
+            hits = hs(
                 client_id,
                 q,
                 limit=settings.FULLTEXT_SEARCH_LIMIT,

@@ -6,16 +6,32 @@ from services.graphrag.retriever import RetrievedChunk
 _DOC_EXTENSIONS = (".txt", ".pdf", ".docx", ".doc", ".md", ".csv")
 
 
+def empty_citations() -> list[RetrievedChunk]:
+    return []
+
+
 def chunk_display_label(chunk: RetrievedChunk) -> str:
     """Human-readable citation label (filename-first)."""
     ctype = chunk.chunk_type or ""
     filename = (chunk.source or "").strip()
 
     if ctype == "row":
+        parts: list[str] = []
         if filename:
-            return filename
+            parts.append(filename)
         if chunk.section_header:
-            return chunk.section_header
+            if parts:
+                parts[0] = f"{parts[0]} — {chunk.section_header}"
+            else:
+                parts.append(chunk.section_header)
+        if chunk.page_number is not None:
+            page = f"page {chunk.page_number}"
+            if parts:
+                parts[-1] = f"{parts[-1]}, {page}"
+            else:
+                parts.append(page)
+        if parts:
+            return parts[0] if len(parts) == 1 else "; ".join(parts)
         return "Document"
 
     if ctype == "table_catalog":
@@ -60,6 +76,8 @@ def select_citation_chunks(
         candidates.append(chunk)
 
     def sort_key(c: RetrievedChunk) -> tuple:
+        if profile.domain == "narrative":
+            return (c.page_number if c.page_number is not None else 9999, -c.score)
         filename = (c.source or "").lower()
         has_file = bool(filename) and filename.endswith(_DOC_EXTENSIONS)
         return (0 if has_file else 1, -c.score)

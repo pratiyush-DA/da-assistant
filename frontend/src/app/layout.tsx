@@ -8,7 +8,7 @@ import { UserProvider } from "@/context/UserContext";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "Data Axle — Business Intelligence Platform",
+  title: "Data Axle-Business Intelligence Platform",
   description:
     "Upload documents by client, ask questions in everyday language, and get answers backed by your files.",
 };

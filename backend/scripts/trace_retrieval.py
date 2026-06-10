@@ -10,7 +10,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.local")
 django.setup()
 
+from services.graphrag.client_corpus import get_client_corpus_profile
 from services.graphrag.context_extractors import catalog_names_from_chunks
+from services.graphrag.query_signals import parse_query_signals
 from services.graphrag.retrieval_profile import resolve_retrieval_profile
 from services.graphrag.workbook_rag import (
     classify_query_domain,
@@ -29,9 +31,36 @@ def main(client_id: str, query: str) -> int:
     print(f"classify_query_domain: {classify_query_domain(query)}")
     print(f"client_has_workbook_chunks: {client_has_workbook_chunks(client_id)}")
 
+    corpus = get_client_corpus_profile(client_id)
+    print(f"\nClientCorpusProfile:")
+    print(f"  documents: {len(corpus.documents)}")
+    print(f"  has_narrative: {corpus.has_narrative}")
+    print(f"  has_workbook: {corpus.has_workbook}")
+    print(f"  is_mixed: {corpus.is_mixed}")
+    for doc in corpus.documents[:8]:
+        print(f"    - {doc.filename} types={sorted(doc.chunk_types)}")
+
+    signals = parse_query_signals(query, client_id)
+    entity = signals.get("entity_table") or signals.get("column_name")
+
     profile = resolve_retrieval_profile(client_id, query)
-    print(f"retrieval_profile.domain: {profile.domain}")
+    print(f"\nretrieval_profile.domain: {profile.domain}")
+    print(f"retrieval_profile.workbook_intent: {profile.workbook_intent}")
+    print(f"retrieval_profile.narrative_score: {profile.narrative_score}")
+    print(f"retrieval_profile.workbook_score: {profile.workbook_score}")
+    print(f"retrieval_profile.workbook_confidence: {profile.workbook_confidence}")
+    print(f"retrieval_profile.entity_in_workbook: {profile.entity_in_workbook}")
     print(f"retrieval_profile.inject_catalog: {profile.inject_catalog}")
+
+    affinity = profile.document_affinity
+    if affinity:
+        top = sorted(affinity.items(), key=lambda kv: -kv[1])[:3]
+        print(f"document_affinity (top 3): {top}")
+    else:
+        print("document_affinity: (none)")
+
+    if entity:
+        print(f"parsed entity token: {entity!r}")
 
     chunks = streaming._retrieve_chunks(client_id, query, profile)
     print(f"\nretrieved chunks: {len(chunks)}")

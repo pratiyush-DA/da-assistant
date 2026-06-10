@@ -3,28 +3,19 @@ from collections.abc import Iterator
 from django.conf import settings
 from langchain_core.exceptions import LangChainException
 
-from services.graphrag.citations import select_citation_chunks
+from services.graphrag.citations import empty_citations, select_citation_chunks
 from services.graphrag.context_extractors import (
     catalog_names_from_chunks,
     extract_definition_from_table_chunk,
     format_table_list_for_context,
 )
-from services.graphrag.hybrid_retriever import hybrid_search
+from services.graphrag.hybrid_retriever import affinity_boost_fn, hybrid_search
 from services.graphrag.metadata_lookup import fetch_catalog_chunk
-from services.graphrag.multi_hop import (
-    mixed_document_search,
-    multi_hop_search,
-    workbook_multi_hop_search,
-)
+from services.graphrag.multi_hop import mixed_document_search, workbook_multi_hop_search
 from services.graphrag.query_signals import parse_query_signals
 from services.graphrag.retrieval_profile import RetrievalProfile, resolve_retrieval_profile
 from services.graphrag.retriever import RetrievedChunk
-from services.graphrag.workbook_rag import (
-    classify_workbook_query,
-    client_has_workbook_chunks,
-    client_is_mixed,
-    resolve_budget_mode,
-)
+from services.graphrag.workbook_rag import resolve_budget_mode
 from services.langchain.prompts import (
     DATA_DICTIONARY_SYSTEM_PROMPT,
     MIXED_SYSTEM_PROMPT,
@@ -39,39 +30,76 @@ CATALOG_ABSTAIN_MESSAGE = (
     "Please re-ingest the spreadsheet workbook for this client."
 )
 
-WORKBOOK_INTENTS = frozenset({
-    "catalog",
-    "table",
-    "table_by_definition",
-    "database",
-    "column",
-    "code",
-})
+NARRATIVE_ABSTAIN_MESSAGE = (
+    "No matching content found in uploaded documents for this question."
+)
+
+
+def _resolve_document_ids(
+    profile: RetrievalProfile, document_ids: list[str] | None
+) -> list[str] | None:
+    if document_ids:
+        return document_ids
+    if profile.focus_document_ids:
+        return list(profile.focus_document_ids)
+    return None
 
 
 def _retrieve_chunks(
-    client_id: str, message: str, profile: RetrievalProfile
+    client_id: str,
+    message: str,
+    profile: RetrievalProfile,
+    *,
+    document_ids: list[str] | None = None,
 ) -> list[RetrievedChunk]:
-    wb_intent = profile.workbook_intent
-
-    if wb_intent == "catalog" and profile.has_workbook:
-        return workbook_multi_hop_search(client_id, message)
+    doc_ids = _resolve_document_ids(profile, document_ids)
+    boost = affinity_boost_fn(profile.document_affinity)
 
     if profile.domain == "narrative":
-        return hybrid_search(client_id, message, chunk_types=["row"])
+        return hybrid_search(
+            client_id,
+            message,
+            chunk_types=["row"],
+            document_ids=doc_ids,
+            score_boost=boost,
+        )
 
-    if profile.domain == "workbook" or wb_intent in WORKBOOK_INTENTS:
-        return workbook_multi_hop_search(client_id, message)
+    if profile.is_mixed_client and profile.domain in ("mixed", "general"):
+        return mixed_document_search(
+            client_id,
+            message,
+            profile=profile,
+            document_ids=doc_ids,
+            score_boost=boost,
+        )
 
-    if profile.is_mixed_client:
-        return mixed_document_search(client_id, message, profile=profile)
+    if (
+        profile.domain == "workbook"
+        and profile.workbook_confidence >= settings.RAG_WORKBOOK_MIN_SCORE
+    ):
+        hits = workbook_multi_hop_search(
+            client_id,
+            message,
+            document_ids=doc_ids,
+            score_boost=boost,
+        )
+        if hits:
+            return hits
+        return hybrid_search(
+            client_id,
+            message,
+            chunk_types=["row"],
+            document_ids=doc_ids,
+            score_boost=boost,
+        )
 
-    if wb_intent == "table_by_definition" and profile.has_workbook:
-        return workbook_multi_hop_search(client_id, message)
-
-    if settings.MULTI_HOP_ENABLED and profile.has_workbook:
-        return multi_hop_search(client_id, message)
-    return hybrid_search(client_id, message, chunk_types=["row"])
+    return hybrid_search(
+        client_id,
+        message,
+        chunk_types=["row"],
+        document_ids=doc_ids,
+        score_boost=boost,
+    )
 
 
 def _inject_catalog_chunk(
@@ -88,10 +116,23 @@ def _inject_catalog_chunk(
     return [catalog] + fitted
 
 
+def _has_narrative_row_chunks(fitted: list[RetrievedChunk]) -> bool:
+    return any((c.chunk_type or "") == "row" for c in fitted)
+
+
 def _catalog_abstain_message(
-    client_id: str, message: str, fitted: list[RetrievedChunk]
+    client_id: str,
+    profile: RetrievalProfile,
+    fitted: list[RetrievedChunk],
 ) -> str | None:
-    if classify_workbook_query(message) != "catalog":
+    if profile.workbook_intent != "catalog":
+        return None
+    if profile.domain in ("narrative", "mixed") and _has_narrative_row_chunks(fitted):
+        return None
+    if (
+        profile.domain != "workbook"
+        and profile.workbook_confidence < settings.RAG_WORKBOOK_MIN_SCORE
+    ):
         return None
     fitted_with_catalog = _inject_catalog_chunk(client_id, fitted)
     if catalog_names_from_chunks(fitted_with_catalog):
@@ -99,10 +140,16 @@ def _catalog_abstain_message(
     return CATALOG_ABSTAIN_MESSAGE
 
 
+def _narrative_abstain(fitted: list[RetrievedChunk], profile: RetrievalProfile) -> bool:
+    if profile.domain != "narrative":
+        return False
+    return not any((c.chunk_type or "") == "row" for c in fitted)
+
+
 def _format_context_with_catalog_facts(
-    message: str, fitted: list[RetrievedChunk]
+    profile: RetrievalProfile, fitted: list[RetrievedChunk]
 ) -> str:
-    if classify_workbook_query(message) != "catalog":
+    if profile.workbook_intent != "catalog":
         return format_context_from_chunks(fitted)
 
     names = catalog_names_from_chunks(fitted)
@@ -174,18 +221,14 @@ def _system_prompt_for_profile(
     profile: RetrievalProfile,
 ) -> tuple[str, bool, bool]:
     """Returns (system_prompt, use_dictionary_prompt, use_mixed_prompt)."""
-    wb_intent = profile.workbook_intent
-
     if profile.is_mixed_client:
-        if profile.domain == "workbook" or wb_intent in WORKBOOK_INTENTS:
-            return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
         if profile.domain == "mixed":
             return MIXED_SYSTEM_PROMPT, False, True
+        if profile.domain == "workbook":
+            return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
         return SYSTEM_PROMPT, False, False
 
     if profile.has_workbook and profile.domain == "workbook":
-        return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
-    if profile.has_workbook and wb_intent in WORKBOOK_INTENTS:
         return DATA_DICTIONARY_SYSTEM_PROMPT, True, False
     return SYSTEM_PROMPT, False, False
 
@@ -206,21 +249,30 @@ def _fit_context(
     if profile.inject_catalog:
         fitted = _inject_catalog_chunk(client_id, fitted)
 
+    if _narrative_abstain(fitted, profile):
+        return RAGFitResult(
+            context=NARRATIVE_ABSTAIN_MESSAGE,
+            fitted_chunks=fitted,
+            citation_chunks=empty_citations(),
+            use_dictionary=use_dictionary,
+            use_mixed=use_mixed,
+        )
+
     citation_chunks = select_citation_chunks(fitted, profile)
 
-    abstain = _catalog_abstain_message(client_id, message, fitted)
+    abstain = _catalog_abstain_message(client_id, profile, fitted)
     if abstain:
         return RAGFitResult(
             context=abstain,
             fitted_chunks=fitted,
-            citation_chunks=citation_chunks,
+            citation_chunks=empty_citations(),
             use_dictionary=use_dictionary,
             use_mixed=use_mixed,
         )
 
     wb_intent = profile.workbook_intent
     if wb_intent == "catalog":
-        context = _format_context_with_catalog_facts(message, fitted)
+        context = _format_context_with_catalog_facts(profile, fitted)
     elif wb_intent == "table":
         context = _format_context_with_table_definition(message, fitted)
     elif wb_intent == "table_by_definition":
@@ -237,20 +289,36 @@ def _fit_context(
     )
 
 
-def retrieve_and_fit_context(client_id: str, message: str) -> RAGFitResult:
-    profile = resolve_retrieval_profile(client_id, message)
-    chunks = _retrieve_chunks(client_id, message, profile)
+def retrieve_and_fit_context(
+    client_id: str,
+    message: str,
+    document_ids: list[str] | None = None,
+) -> RAGFitResult:
+    profile = resolve_retrieval_profile(client_id, message, document_ids=document_ids)
+    chunks = _retrieve_chunks(
+        client_id, message, profile, document_ids=document_ids
+    )
     return _fit_context(client_id, message, chunks, profile)
 
 
-def stream_rag_answer(client_id: str, message: str) -> Iterator[str]:
+def _is_abstain_context(context: str) -> bool:
+    return context.startswith("I cannot list tables") or context.startswith(
+        "No matching content"
+    )
+
+
+def stream_rag_answer(
+    client_id: str,
+    message: str,
+    document_ids: list[str] | None = None,
+) -> Iterator[str]:
     if not settings.GROQ_API_KEY:
         yield "Error: GROQ_API_KEY is not configured."
         return
 
-    result = retrieve_and_fit_context(client_id, message)
+    result = retrieve_and_fit_context(client_id, message, document_ids=document_ids)
 
-    if result.context.startswith("I cannot list tables"):
+    if _is_abstain_context(result.context):
         yield result.context
         return
 
