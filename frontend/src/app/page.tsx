@@ -48,7 +48,7 @@ export default function HomePage() {
         <h1 className="text-3xl font-bold text-gray-900">Business Intelligence Platform</h1>
         <p className="mt-3 text-gray-500">
           Upload documents by client, ask questions in everyday language, and get answers backed
-          by your files. SQL lineage exploration is planned for a later release—available today:
+          by your files. SQL lineage exploration is planned for a later release - available today:
           Business Assistant chat and document management.
         </p>
       </div>
