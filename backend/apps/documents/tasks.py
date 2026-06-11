@@ -10,6 +10,7 @@ from services.chunking.workbook_chunker import WorkbookDictionaryChunker
 from services.embedding import embed_texts
 from services.neo4j.repositories import DocumentRepository, IngestionRepository
 from services.parsing import parse_document
+from services.parsing.ocr_enrichment import cleanup_figure_artifacts
 from services.parsing.sheet_profiles import is_workbook_dictionary
 from services.storage import get_storage_backend
 
@@ -121,3 +122,4 @@ def ingest_document(self, document_id: str):
     finally:
         if tmp_path:
             Path(tmp_path).unlink(missing_ok=True)
+        cleanup_figure_artifacts()

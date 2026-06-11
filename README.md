@@ -11,7 +11,7 @@ Neo4j-native **GraphRAG Business Assistant** with client-isolated vector search,
 - **AI orchestration:** LangChain (LCEL RAG chain, custom Neo4j retriever)
 - **Embeddings:** Local `BAAI/bge-large-en-v1.5` (1024-dim) via `langchain-huggingface`
 - **LLM:** Groq via `langchain-groq` (`ChatGroq`, e.g. `llama-3.1-8b-instant`, streaming)
-- **Parsing:** `unstructured` (PDF/DOCX/TXT) · **Tables:** `openpyxl` (XLSX/XLSM), `xlrd` (.xls), stdlib CSV — sheet-aware JSON rows
+- **Parsing:** `unstructured` (PDF/DOCX/TXT) with adaptive image OCR · **Tables:** `openpyxl` (XLSX/XLSM), `xlrd` (.xls), stdlib CSV — sheet-aware JSON rows
 - **Data dictionary RAG:** Schema-aware table/column/code_set chunks · hybrid vector + Neo4j fulltext (RRF) · multi-hop retrieval · query expansion · `VECTOR_SEARCH_LIMIT=12` (configurable)
 - **Chunking:** Parent/child graph; data dictionaries use per-column child chunks (not row batches)
 
@@ -75,6 +75,22 @@ make schema
 ```
 
 Optional: one-shot init via `.env` instead of `make bootstrap` — set `DOCKER_INIT_NEO4J_SCHEMA=1` and `DOCKER_SEED_CLIENTS=1`, run `docker compose up -d` once, then set both back to `0` for faster restarts.
+
+### Narrative parsing with image OCR (PDF/DOCX)
+
+Narrative files use a **two-phase adaptive parser**:
+
+1. **Fast pass** — `partition_pdf(strategy="fast")` or `partition(auto)` for extractable text (unchanged for text-only documents).
+2. **Detection** — embedded images in PDF/DOCX, empty `Image`/`Figure` markers, or low text density (scanned PDFs).
+3. **Supplemental OCR** — hi_res image-block OCR for diagrams/flowcharts, or `ocr_only` for scanned pages; DOCX embedded images via Tesseract.
+
+OCR text is merged with the fast pass, deduplicated, and chunked as normal `row` narrative content with `Figure (page N)` section headers.
+
+**Re-ingest** PDF/DOCX files after enabling or upgrading OCR to pick up diagram text. Set `PARSER_IMAGE_OCR_ENABLED=false` in `.env` to disable supplemental OCR.
+
+Optional env (see `.env.example`): `PARSER_MIN_IMAGE_COUNT`, `PARSER_TEXT_DENSITY_MIN`, `PARSER_OCR_LANGUAGES`, `PARSER_MAX_OCR_IMAGES`.
+
+Rebuild Docker images after `requirements.txt` / `Dockerfile` changes (`make build`) — hi_res layout models and Tesseract language packs are installed in the worker image.
 
 ### Data dictionary RAG (Excel)
 

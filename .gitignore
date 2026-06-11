@@ -20,3 +20,4 @@ htmlcov/
 *.log
 models_cache/
 testing_data/
+backend/figures/
