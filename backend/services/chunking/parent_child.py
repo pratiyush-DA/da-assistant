@@ -10,6 +10,7 @@ from django.conf import settings
 from services.parsing.types import ParsedElement
 
 TITLE_CATEGORIES = {"Title", "Header", "Heading"}
+IMAGE_OCR_CATEGORIES = frozenset({"ImageOCR", "Image", "Figure"})
 TABLE_ROW_CATEGORY = "TableRow"
 SECTION_HEADER_PATTERN = re.compile(
     r"^(?:Section\s+\d+|\d+(?:\.\d+)+\s+\S)",
@@ -216,8 +217,19 @@ class ParentChildChunker:
                 header_candidate
             ):
                 current_header = header_candidate
+            section_for_el = current_header
+            if getattr(el, "source_kind", "text") == "image_ocr":
+                if el.page_number is not None:
+                    section_for_el = f"Figure (page {el.page_number})"
+                else:
+                    section_for_el = "Figure"
+            elif el.category in IMAGE_OCR_CATEGORIES and not section_for_el:
+                if el.page_number is not None:
+                    section_for_el = f"Figure (page {el.page_number})"
+                else:
+                    section_for_el = "Figure"
             for sent in self._split_sentences(el.text):
-                sentences.append((sent, el.page_number, current_header))
+                sentences.append((sent, el.page_number, section_for_el))
 
         if not sentences:
             return [], []
